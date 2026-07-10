@@ -2,6 +2,23 @@ import Foundation
 import Testing
 @testable import SyncedLyricsKit
 
+final class MessageRecorder: @unchecked Sendable {
+    private var messages: [String] = []
+    private let lock = NSLock()
+
+    func append(_ message: String) {
+        lock.lock()
+        messages.append(message)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return messages
+    }
+}
+
 @Suite("Auto-detection and worker responses")
 struct SyncedLyricsTests {
     @Test("TTML input auto-detects")
@@ -27,6 +44,15 @@ struct SyncedLyricsTests {
     func fallsBackToPlain() {
         let lyrics = SyncedLyrics.parse("Just words\non lines")
         #expect(lyrics?.plainText == "Just words\non lines")
+    }
+
+    @Test("Parsing emits log messages when a handler is provided")
+    func parsingLogsToHandler() {
+        let recorder = MessageRecorder()
+        let lyrics = SyncedLyrics.parse("[00:10.00]Hello world", logger: { recorder.append($0) })
+
+        #expect(lyrics != nil)
+        #expect(recorder.snapshot().contains { $0.contains("LRC") || $0.contains("parsing") })
     }
 
     @Test("Empty input returns nil")

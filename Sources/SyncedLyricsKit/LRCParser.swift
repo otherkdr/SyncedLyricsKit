@@ -18,8 +18,12 @@ public struct LRCParser: Sendable {
 
     /// Parses an LRC document into assembled, display-ready lyric lines.
     /// Returns an empty array when the document contains no timed lines.
-    public func parse(_ lrc: String) -> [LyricLine] {
-        LineAssembler.assemble(parseRawLines(lrc))
+    public func parse(_ lrc: String, logger: LyricsLogger? = nil) -> [LyricLine] {
+        logger?("LRCParser: parsing document")
+        let rawLines = parseRawLines(lrc)
+        let lines = LineAssembler.assemble(rawLines)
+        logger?("LRCParser: produced \(lines.count) line(s)")
+        return lines
     }
 
     // MARK: - Document parsing

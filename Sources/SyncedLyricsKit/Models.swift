@@ -1,5 +1,8 @@
 import Foundation
 
+/// A lightweight callback for emitting diagnostic messages from parsing and fetching.
+public typealias LyricsLogger = @Sendable (String) -> Void
+
 /// How finely a lyric line is timed.
 public enum TimingGranularity: String, Sendable, Codable, Hashable {
     /// Only the line itself carries a start time.

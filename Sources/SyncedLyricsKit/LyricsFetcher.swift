@@ -113,6 +113,7 @@ public actor LyricsFetcher {
     private let configuration: LyricsFetcherConfiguration
     private let session: URLSession
     private let cache: LyricsDiskCache?
+    private let logger: LyricsLogger?
 
     private var topicVideoCache: [String: String] = [:]
     private var inFlightFetches: [String: Task<ParsedLyrics?, Error>] = [:]
@@ -129,10 +130,12 @@ public actor LyricsFetcher {
     public init(
         configuration: LyricsFetcherConfiguration,
         cache: LyricsDiskCache? = nil,
-        session: URLSession? = nil
+        session: URLSession? = nil,
+        logger: LyricsLogger? = nil
     ) {
         self.configuration = configuration
         self.cache = cache
+        self.logger = logger
 
         if let session {
             self.session = session
@@ -161,6 +164,13 @@ public actor LyricsFetcher {
     ) async throws -> ParsedLyrics? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = configuration.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty {
+            logger?("LyricsFetcher: missing Google API key")
+            throw LyricsFetchError.missingGoogleAPIKey
+        }
+
+        logger?("LyricsFetcher: fetching lyrics for \(trimmedTitle) by \(trimmedArtist)")
         let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestKey = [
             TrackMetadataNormalizer.normalized(trimmedTitle),
@@ -174,6 +184,7 @@ public actor LyricsFetcher {
         // upstream failure would otherwise be served forever.
         if let cached = await cache?.lyrics(title: trimmedTitle, artist: trimmedArtist, album: trimmedAlbum, duration: duration),
            !cached.isEmpty {
+            logger?("LyricsFetcher: serving cached lyrics")
             return cached
         }
 
@@ -182,6 +193,7 @@ public actor LyricsFetcher {
             return try await inFlight.value
         }
 
+        logger?("LyricsFetcher: starting network fetch")
         let task = Task<ParsedLyrics?, Error> {
             try await self.performFetch(
                 title: trimmedTitle,
@@ -215,7 +227,9 @@ public actor LyricsFetcher {
         album: String,
         duration: TimeInterval
     ) async throws -> ParsedLyrics? {
+        logger?("LyricsFetcher: resolving topic video")
         let resolution = try await resolveTopicVideo(title: title, artist: artist, album: album)
+        logger?("LyricsFetcher: requesting worker for video \(resolution.videoId)")
         let (data, response) = try await requestWorker(
             videoId: resolution.videoId,
             title: title.isEmpty ? (resolution.inferredTitle ?? "") : title,
@@ -232,19 +246,22 @@ public actor LyricsFetcher {
         // Preferred path: the typed worker response with source-priority
         // selection.
         if let decoded = try? JSONDecoder().decode(WorkerLyricsResponse.self, from: data),
-           let lyrics = decoded.bestLyrics(), !lyrics.isEmpty {
+           let lyrics = decoded.bestLyrics(logger: logger), !lyrics.isEmpty {
+            logger?("LyricsFetcher: parsed lyrics from worker response")
             return lyrics
         }
 
         // The shape didn't match (worker fork, schema drift) — scan the raw
         // JSON for anything that looks like lyrics under the known keys.
         if let lyrics = Self.lyricsFromRawJSON(data), !lyrics.isEmpty {
+            logger?("LyricsFetcher: parsed lyrics from raw JSON fallback")
             return lyrics
         }
 
         // Last resort: the response may point at the lyrics rather than
         // embed them. Follow any URLs it contains and parse what they serve.
         if let lyrics = await lyricsFromEmbeddedURLs(in: data), !lyrics.isEmpty {
+            logger?("LyricsFetcher: parsed lyrics from embedded URL fallback")
             return lyrics
         }
 

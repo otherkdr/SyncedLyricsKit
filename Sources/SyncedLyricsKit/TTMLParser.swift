@@ -36,8 +36,12 @@ public struct TTMLParser: Sendable {
 
     /// Parses a TTML document into assembled, display-ready lyric lines.
     /// Returns an empty array when the document contains no usable lyrics.
-    public func parse(_ ttml: String, timing: TTMLTimingHint = .automatic) -> [LyricLine] {
-        LineAssembler.assemble(parseRawLines(ttml, timing: timing))
+    public func parse(_ ttml: String, timing: TTMLTimingHint = .automatic, logger: LyricsLogger? = nil) -> [LyricLine] {
+        logger?("TTMLParser: parsing document")
+        let rawLines = parseRawLines(ttml, timing: timing)
+        let lines = LineAssembler.assemble(rawLines)
+        logger?("TTMLParser: produced \(lines.count) line(s)")
+        return lines
     }
 
     // MARK: - Document structure

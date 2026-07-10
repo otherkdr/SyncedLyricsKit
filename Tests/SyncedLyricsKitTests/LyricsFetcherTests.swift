@@ -62,6 +62,18 @@ struct LyricsFetcherTests {
         }
     }
 
+    @Test("Fetcher emits logs for configuration failures")
+    func fetcherLogsConfigurationErrors() async {
+        let recorder = MessageRecorder()
+        let fetcher = LyricsFetcher(configuration: .init(googleAPIKey: "  "), logger: { recorder.append($0) })
+
+        await #expect(throws: LyricsFetchError.self) {
+            _ = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        }
+
+        #expect(recorder.snapshot().contains { $0.contains("Google API key") })
+    }
+
     @Test("Metadata inference splits 'Artist - Song' titles, never overwrites")
     func metadataInference() {
         let candidate = LyricsFetcher.VideoCandidate(

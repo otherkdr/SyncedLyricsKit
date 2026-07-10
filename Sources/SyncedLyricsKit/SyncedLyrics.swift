@@ -18,34 +18,53 @@ public enum SyncedLyrics {
     /// first.
     ///
     /// Returns `nil` when the input contains nothing usable.
-    public static func parse(_ raw: String) -> ParsedLyrics? {
+    public static func parse(_ raw: String, logger: LyricsLogger? = nil) -> ParsedLyrics? {
+        logger?("SyncedLyrics: starting parse")
+
         if let unwrapped = unwrapNestedPayload(raw), unwrapped != raw {
-            return parse(unwrapped)
+            logger?("SyncedLyrics: unwrapped nested payload")
+            return parse(unwrapped, logger: logger)
         }
 
         if raw.contains("<tt") {
-            let lines = TTMLParser().parse(raw)
-            if !lines.isEmpty { return .timed(lines) }
+            logger?("SyncedLyrics: attempting TTML parsing")
+            let lines = TTMLParser().parse(raw, logger: logger)
+            if !lines.isEmpty {
+                logger?("SyncedLyrics: parsed \(lines.count) TTML line(s)")
+                return .timed(lines)
+            }
         }
 
-        let lines = LRCParser().parse(raw)
-        if !lines.isEmpty { return .timed(lines) }
+        logger?("SyncedLyrics: attempting LRC parsing")
+        let lines = LRCParser().parse(raw, logger: logger)
+        if !lines.isEmpty {
+            logger?("SyncedLyrics: parsed \(lines.count) LRC line(s)")
+            return .timed(lines)
+        }
 
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : .plain(trimmed)
+        if trimmed.isEmpty {
+            logger?("SyncedLyrics: input was empty")
+            return nil
+        }
+
+        logger?("SyncedLyrics: falling back to plain text")
+        return .plain(trimmed)
     }
 
     /// Parses a known-TTML document. Prefer this over `parse(_:)` when you
     /// already know the format, or when you have a timing hint from the
     /// source (see ``TTMLTimingHint``).
-    public static func parse(ttml: String, timing: TTMLTimingHint = .automatic) -> ParsedLyrics? {
-        let lines = TTMLParser().parse(ttml, timing: timing)
+    public static func parse(ttml: String, timing: TTMLTimingHint = .automatic, logger: LyricsLogger? = nil) -> ParsedLyrics? {
+        logger?("SyncedLyrics: parsing TTML directly")
+        let lines = TTMLParser().parse(ttml, timing: timing, logger: logger)
         return lines.isEmpty ? nil : .timed(lines)
     }
 
     /// Parses a known-LRC document (standard or enhanced/rich-sync).
-    public static func parse(lrc: String) -> ParsedLyrics? {
-        let lines = LRCParser().parse(lrc)
+    public static func parse(lrc: String, logger: LyricsLogger? = nil) -> ParsedLyrics? {
+        logger?("SyncedLyrics: parsing LRC directly")
+        let lines = LRCParser().parse(lrc, logger: logger)
         return lines.isEmpty ? nil : .timed(lines)
     }
 

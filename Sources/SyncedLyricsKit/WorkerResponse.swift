@@ -72,15 +72,15 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
     /// GoLyrics TTML, Musixmatch rich-sync), then the same sources at
     /// line level, then the remaining line-synced providers, and finally
     /// LRCLIB plain text. Returns `nil` when no source yields anything.
-    public func bestLyrics() -> ParsedLyrics? {
+    public func bestLyrics(logger: LyricsLogger? = nil) -> ParsedLyrics? {
         let ttmlParser = TTMLParser()
         let lrcParser = LRCParser()
 
         let binimum = binimumTtml.map {
-            ttmlParser.parse($0, timing: TTMLTimingHint(sourceHint: binimumTimingType))
+            ttmlParser.parse($0, timing: TTMLTimingHint(sourceHint: binimumTimingType), logger: logger)
         }
-        let goLyricsTtml = goLyricsApiTtml.map { ttmlParser.parse($0) }
-        let musixmatchRich = musixmatchWordByWordLyrics.map { lrcParser.parse($0) }
+        let goLyricsTtml = goLyricsApiTtml.map { ttmlParser.parse($0, logger: logger) }
+        let musixmatchRich = musixmatchWordByWordLyrics.map { lrcParser.parse($0, logger: logger) }
 
         // A line whose granularity beats `.line` — or that carries timed
         // background vocals — means the source has real per-word timing.
@@ -93,6 +93,7 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
         // First pass: prefer sources that actually deliver word timing.
         for candidate in [binimum, goLyricsTtml, musixmatchRich] {
             if let lines = candidate, !lines.isEmpty, hasWordTiming(lines) {
+                logger?("WorkerLyricsResponse: selected word-timed source")
                 return .timed(lines)
             }
         }
@@ -101,6 +102,7 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
         // they tend to have better text quality.
         for candidate in [binimum, goLyricsTtml, musixmatchRich] {
             if let lines = candidate, !lines.isEmpty {
+                logger?("WorkerLyricsResponse: selected line-level source")
                 return .timed(lines)
             }
         }
@@ -113,12 +115,14 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
             lrclibSyncedLyrics
         ]
         for source in lineLevelSources {
-            if let source, case let lines = lrcParser.parse(source), !lines.isEmpty {
+            if let source, case let lines = lrcParser.parse(source, logger: logger), !lines.isEmpty {
+                logger?("WorkerLyricsResponse: selected LRC source")
                 return .timed(lines)
             }
         }
 
         if let plain = lrclibPlainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines), !plain.isEmpty {
+            logger?("WorkerLyricsResponse: falling back to plain text")
             return .plain(plain)
         }
 
