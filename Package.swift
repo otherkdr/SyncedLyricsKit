@@ -2,15 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "BetterLyricsKit",
+    name: "SyncedLyricsKit",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .library(name: "BetterLyricsKit", targets: ["BetterLyricsKit"])
+        .library(name: "SyncedLyricsKit", targets: ["SyncedLyricsKit"])
     ],
     targets: [
-        .target(name: "BetterLyricsKit"),
-        .testTarget(name: "BetterLyricsKitTests", dependencies: ["BetterLyricsKit"])
+        .target(name: "SyncedLyricsKit"),
+        .testTarget(name: "SyncedLyricsKitTests", dependencies: ["SyncedLyricsKit"])
     ]
 )

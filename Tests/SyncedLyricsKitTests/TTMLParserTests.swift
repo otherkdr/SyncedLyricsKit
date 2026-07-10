@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import BetterLyricsKit
+@testable import SyncedLyricsKit
 
 @Suite("TTML parsing")
 struct TTMLParserTests {

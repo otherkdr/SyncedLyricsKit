@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-@testable import BetterLyricsKit
+@testable import SyncedLyricsKit
 
 @Suite("Auto-detection and worker responses")
-struct BetterLyricsTests {
+struct SyncedLyricsTests {
     @Test("TTML input auto-detects")
     func detectsTTML() {
         let ttml = """
@@ -12,45 +12,45 @@ struct BetterLyricsTests {
         </div></body></tt>
         """
 
-        let lyrics = BetterLyrics.parse(ttml)
+        let lyrics = SyncedLyrics.parse(ttml)
         #expect(lyrics?.lines?.first?.text == "Hello")
     }
 
     @Test("LRC input auto-detects")
     func detectsLRC() {
-        let lyrics = BetterLyrics.parse("[00:10.00]Hello world")
+        let lyrics = SyncedLyrics.parse("[00:10.00]Hello world")
         #expect(lyrics?.lines?.first?.text == "Hello world")
         #expect(lyrics?.lines?.first?.start == 10.0)
     }
 
     @Test("Untimed input falls back to plain text")
     func fallsBackToPlain() {
-        let lyrics = BetterLyrics.parse("Just words\non lines")
+        let lyrics = SyncedLyrics.parse("Just words\non lines")
         #expect(lyrics?.plainText == "Just words\non lines")
     }
 
     @Test("Empty input returns nil")
     func emptyInput() {
-        #expect(BetterLyrics.parse("   \n  ") == nil)
+        #expect(SyncedLyrics.parse("   \n  ") == nil)
     }
 
     @Test("JSON-wrapped payloads unwrap before parsing")
     func unwrapsJSON() {
         let wrapped = #"{"syncedLyrics": "[00:10.00]Hello world"}"#
-        let lyrics = BetterLyrics.parse(wrapped)
+        let lyrics = SyncedLyrics.parse(wrapped)
         #expect(lyrics?.lines?.first?.text == "Hello world")
     }
 
     @Test("JSON-encoded strings unwrap before parsing")
     func unwrapsJSONString() {
         let wrapped = "\"[00:10.00]Hello world\""
-        let lyrics = BetterLyrics.parse(wrapped)
+        let lyrics = SyncedLyrics.parse(wrapped)
         #expect(lyrics?.lines?.first?.text == "Hello world")
     }
 
     @Test("ParsedLyrics survives an encode/decode round trip")
     func codableRoundTrip() throws {
-        let original = BetterLyrics.parse("[00:10.00]<00:10.00>Hello <00:10.50>world")!
+        let original = SyncedLyrics.parse("[00:10.00]<00:10.00>Hello <00:10.50>world")!
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(ParsedLyrics.self, from: data)
         #expect(decoded == original)

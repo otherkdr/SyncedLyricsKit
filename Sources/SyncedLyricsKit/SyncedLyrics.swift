@@ -3,14 +3,14 @@ import Foundation
 /// The main entry point: hands a raw lyrics string to the right parser.
 ///
 /// ```swift
-/// if let lyrics = BetterLyrics.parse(rawString) {
+/// if let lyrics = SyncedLyrics.parse(rawString) {
 ///     switch lyrics {
 ///     case .timed(let lines): render(lines)
 ///     case .plain(let text):  showPlain(text)
 ///     }
 /// }
 /// ```
-public enum BetterLyrics {
+public enum SyncedLyrics {
     /// Parses a lyrics string of unknown format, auto-detecting between
     /// TTML, enhanced/standard LRC, and plain text — in that order of
     /// preference. JSON-wrapped payloads (a common shape for lyrics APIs,

@@ -1,13 +1,13 @@
-# BetterLyricsKit
+# SyncedLyricsKit
 
-**Word-by-word and syllable-timed lyrics parsing for Swift.**
+**Word-by-word and syllable-timed lyrics for Swift — fetched, parsed, and structured.**
 
-BetterLyricsKit turns raw lyric data — TTML (including the Apple Music dialect), standard LRC, and enhanced/rich-sync LRC — into clean, structured, display-ready Swift models with timing down to the individual syllable. It handles the messy parts for you: syllable grouping, background/backing vocals, duet voices, embedded translations, malformed markup, and duration inference.
+Synchronized lyric data is fragmented across multiple providers and formats, each with its own quirks: nested background-vocal markup, duet voice metadata, translations embedded in document heads, and span timestamps that may be absolute or relative depending on the producer. SyncedLyricsKit normalizes all of it behind one API.
 
-It is a **pure parsing library**: no networking, no API keys, no UI. You bring the lyric data; BetterLyricsKit brings the structure.
+Give it raw lyric data — TTML (including the Apple Music dialect), standard LRC, or enhanced/rich-sync LRC — and it returns structured, display-ready Swift models timed down to the individual syllable. For the full pipeline, the built-in [`LyricsFetcher`](#fetching-lyricsfetcher) resolves the currently playing track and retrieves lyrics from your own backend. The parsers themselves never touch the network.
 
 > [!IMPORTANT]
-> **You need a lyrics source.** This package does not fetch lyrics — it parses them. To actually get word-by-word or syllable-timed lyric data for songs, you will need a backend such as the **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into a single JSON response that this package decodes natively. A complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is included below. Simpler line-synced sources like the free [LRCLIB API](https://lrclib.net/) also work out of the box.
+> **A lyrics backend is required for fetching.** `LyricsFetcher` targets your own deployment of the **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into a single JSON response that this package decodes natively. Deployment fits within Cloudflare's free tier; the complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is below. The parsers also accept data from any other source, including the free [LRCLIB API](https://lrclib.net/).
 
 ---
 
@@ -21,11 +21,14 @@ It is a **pure parsing library**: no networking, no API keys, no UI. You bring t
 - [Supported Formats](#supported-formats)
 - [Parsing API](#parsing-api)
 - [Working with Worker Responses](#working-with-worker-responses)
+- [Fetching (LyricsFetcher)](#fetching-lyricsfetcher)
+- [Caching (LyricsDiskCache)](#caching-lyricsdiskcache)
 - [Rendering Guidance](#rendering-guidance)
 - [Setting Up a Lyrics Backend (better-lyrics/cf-api)](#setting-up-a-lyrics-backend-better-lyricscf-api)
 - [Utilities](#utilities)
 - [Design Notes](#design-notes)
 - [Credits](#credits)
+- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -40,33 +43,35 @@ It is a **pure parsing library**: no networking, no API keys, no UI. You bring t
 - 🌍 **Translations** — Apple Music TTML per-line translations are attached to their lines (only for non-English sources, where they're meaningful).
 - 🧠 **Smart structuring** — line end-times are taken from the last sung word (so duet overlaps and instrumental gaps stay visible), background-only lines are folded into their neighbors, and every line self-reports its timing granularity.
 - 🛡 **Tolerant of real-world data** — unbalanced tags, HTML entities, JSON-wrapped payloads, absolute *or* relative TTML span timing: all handled.
-- 📦 **Zero dependencies, fully `Sendable`, `Codable` models** — cache parsed results straight to disk with `JSONEncoder`.
+- 🚀 **Complete fetching pipeline** — `LyricsFetcher` resolves the playing track to its official YouTube Topic video, requests your worker, coalesces duplicate in-flight requests, falls back through raw-JSON scanning and embedded-URL following when response shapes drift, and infers missing metadata from the resolved video.
+- 💾 **Self-maintaining persistent cache** — `LyricsDiskCache` persists results across launches with expiry, schema versioning, and a size ceiling; empty payloads are never cached, so a transient failure cannot pin a bad result to a track.
+- 📦 **Zero dependencies, fully `Sendable`, `Codable` models** — everything round-trips through `JSONEncoder` for custom persistence layers.
 
 ## Requirements
 
 - **macOS 13+**
 - **Swift 6.0+** (Xcode 16 or later)
 
-BetterLyricsKit is macOS-focused because syllable-timed lyric rendering is primarily a desktop music-companion use case, and the package is tested against that platform.
+SyncedLyricsKit is macOS-focused because syllable-timed lyric rendering is primarily a desktop music-companion use case, and the package is tested against that platform.
 
 ## Installation
 
 ### Swift Package Manager (Xcode)
 
 1. In Xcode: **File → Add Package Dependencies…**
-2. Enter the repository URL: `https://github.com/otherkdr/BetterLyricsKit`
-3. Add the **BetterLyricsKit** library to your target.
+2. Enter the repository URL: `https://github.com/otherkdr/SyncedLyricsKit`
+3. Add the **SyncedLyricsKit** library to your target.
 
 ### Package.swift
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/otherkdr/BetterLyricsKit.git", from: "1.0.0")
+    .package(url: "https://github.com/otherkdr/SyncedLyricsKit.git", from: "1.0.0")
 ],
 targets: [
     .target(
         name: "YourApp",
-        dependencies: ["BetterLyricsKit"]
+        dependencies: ["SyncedLyricsKit"]
     )
 ]
 ```
@@ -74,10 +79,10 @@ targets: [
 ## Quick Start
 
 ```swift
-import BetterLyricsKit
+import SyncedLyricsKit
 
 // Parse anything — format is auto-detected (TTML, LRC, enhanced LRC, plain).
-guard let lyrics = BetterLyrics.parse(rawLyricString) else {
+guard let lyrics = SyncedLyrics.parse(rawLyricString) else {
     // Nothing usable in the input.
     return
 }
@@ -157,11 +162,11 @@ TTML details worth knowing:
 
 ```swift
 // Auto-detecting facade — the right choice most of the time.
-BetterLyrics.parse(_ raw: String) -> ParsedLyrics?
+SyncedLyrics.parse(_ raw: String) -> ParsedLyrics?
 
 // Format-specific entry points, when you know what you have:
-BetterLyrics.parse(ttml: String, timing: TTMLTimingHint = .automatic) -> ParsedLyrics?
-BetterLyrics.parse(lrc: String) -> ParsedLyrics?
+SyncedLyrics.parse(ttml: String, timing: TTMLTimingHint = .automatic) -> ParsedLyrics?
+SyncedLyrics.parse(lrc: String) -> ParsedLyrics?
 
 // Or use the parsers directly for [LyricLine] output:
 TTMLParser().parse(_ ttml: String, timing: TTMLTimingHint = .automatic) -> [LyricLine]
@@ -175,12 +180,12 @@ All parsing is synchronous, allocation-light, and safe to run off the main threa
 If your backend is a [better-lyrics/cf-api](https://github.com/better-lyrics/cf-api) worker, `WorkerLyricsResponse` decodes its `/lyrics` JSON directly and picks the best source for you:
 
 ```swift
-import BetterLyricsKit
+import SyncedLyricsKit
 
 // You fetch (networking is your app's concern)…
 let (data, _) = try await URLSession.shared.data(for: request)
 
-// …BetterLyricsKit decodes and selects.
+// …SyncedLyricsKit decodes and selects.
 let response = try JSONDecoder().decode(WorkerLyricsResponse.self, from: data)
 
 if let lyrics = response.bestLyrics() {
@@ -197,9 +202,77 @@ if let lyrics = response.bestLyrics() {
 
 The Binimum TTML timing hint (`binimumTimingType`) is applied automatically.
 
+## Fetching (LyricsFetcher)
+
+`LyricsFetcher` implements the complete pipeline behind a single call: pass the currently playing track's metadata, receive parsed lyrics. It was extracted from a production music app and retains that implementation's robustness characteristics.
+
+```swift
+import SyncedLyricsKit
+
+let fetcher = LyricsFetcher(
+    configuration: .init(
+        // ⚠️ Placeholder — replace with your own deployed worker (see the
+        // backend tutorial below for creating one).
+        workerBaseURL: LyricsFetcherConfiguration.placeholderWorkerBaseURL,
+        googleAPIKey: "AIza…",          // YouTube Data API v3 key
+        authorizationToken: jwt          // nil while BYPASS_AUTH=true locally
+    ),
+    cache: LyricsDiskCache()             // optional, strongly recommended
+)
+
+// Feed it whatever your now-playing source reports:
+let lyrics = try await fetcher.fetchLyrics(
+    title: nowPlaying.title,
+    artist: nowPlaying.artist,
+    album: nowPlaying.album,
+    duration: nowPlaying.duration
+)
+```
+
+### Pipeline stages
+
+1. **Cache check.** With a `LyricsDiskCache` attached, previously fetched tracks return immediately. Only non-empty payloads are trusted, so an empty result cached during a transient upstream failure is never served indefinitely.
+
+2. **Request coalescing.** Concurrent fetches for the same track (duplicate UI requests, track-change races) join the existing in-flight request instead of duplicating it.
+
+3. **YouTube Topic resolution.** The fetcher queries the [YouTube Data API v3](https://developers.google.com/youtube/v3) for the track as an official *"Topic"* video — auto-generated `Artist - Topic` channels carry the cleanest metadata for lyrics matching. It builds a prioritized query ladder (`"Artist Song topic"` first, then album variants, symbol-sanitized titles like *Pink + White* → *Pink White*, and bare-metadata fallbacks), scores every candidate (Topic channel +100, artist/title matches, "official"/"audio" markers), and sanity-checks the winner against your metadata. If the top result doesn't plausibly match, it retries with stricter queries (*official audio*, *official video*, *lyrics*, *live*) before settling — and a weak match is deliberately never cached, so a better one can win next time.
+
+   **This step requires a Google API key** with YouTube Data API v3 enabled — see [Step 3 of the backend tutorial](#step-3--api-keys). Each search costs 100 units of the 10,000/day free quota; resolved video IDs are cached in memory per track so repeat plays don't re-spend it.
+
+4. **Metadata inference.** Players sometimes report incomplete metadata (a title with no artist, or vice versa). The resolved video fills the gaps — an `"Artist - Song"` video title splits into both halves — and the inferred values are forwarded to the worker to improve its matching. Caller-supplied metadata is never overwritten, only completed.
+
+5. **Worker request.** The video ID plus song/artist/album/duration are sent to your Cloudflare Worker's `/lyrics` endpoint, with the JWT in the `Authorization` header and a configurable `User-Agent` identifying your app.
+
+6. **Layered response parsing.** The response decodes through `WorkerLyricsResponse.bestLyrics()` for full source-priority selection. If the envelope doesn't match (a worker fork, schema drift), the fetcher scans the raw JSON at any nesting depth for the known lyric fields, in quality order. If the response contains links to lyrics rather than embedded lyrics, each URL is followed and the full decode chain is applied to its content. `nil` is returned only when every path is exhausted.
+
+7. **Store.** Non-empty results are written to the disk cache for subsequent launches.
+
+`LyricsFetcher` is an actor, safe to call concurrently from any context. It throws `LyricsFetchError` for configuration and transport problems (`missingGoogleAPIKey`, `requestFailed(statusCode:)`, `noTopicVideoFound`), and returns `nil` when the pipeline succeeded but no source had lyrics for the track. Networking runs on an ephemeral `URLSession` (no cookie or credential persistence, waits for connectivity, timeouts configurable).
+
+> [!WARNING]
+> `LyricsFetcherConfiguration.placeholderWorkerBaseURL` (`https://better-lyrics-api.your-account.workers.dev`) is a placeholder; nothing is deployed there. Follow [Setting Up a Lyrics Backend](#setting-up-a-lyrics-backend-better-lyricscf-api) to create your own worker, then point `workerBaseURL` at it. Treat the Google API key as a secret: load it from a local plist or environment configuration, restrict it to the YouTube Data API in the Google Cloud console, and never commit it.
+
+## Caching (LyricsDiskCache)
+
+Lyrics rarely change once fetched, so persistent caching directly reduces bandwidth usage, worker provider quota consumption, and YouTube search quota spend. `LyricsDiskCache` is a self-maintaining actor constructed once and passed to the fetcher:
+
+```swift
+let cache = LyricsDiskCache()                    // sensible defaults, or:
+let cache = LyricsDiskCache(retentionDays: 30)   // keep entries longer (7–30)
+```
+
+Maintenance is automatic:
+
+- **Expiry** — entries are valid for the retention window (default 14 days); expired files are swept on startup and deleted on read.
+- **Schema versioning** — after a model change in a future release, old entries are invalidated rather than decoded incorrectly.
+- **Size ceiling** — the cache never exceeds its limit (default 100 MiB); the oldest entries are evicted first.
+- **Manual invalidation** — `clearAll()` (or `fetcher.clearCaches()`) removes every entry for a full refresh.
+
+Entries are keyed by title + artist + album + rounded duration (SHA-256 hashed to filenames), and live in `Application Support/SyncedLyricsKit/LyricsCache` by default — pass your own directory if you'd rather keep it elsewhere.
+
 ## Rendering Guidance
 
-BetterLyricsKit deliberately stops at the model layer, but the model is shaped for rendering:
+SyncedLyricsKit deliberately stops at the model layer, but the model is shaped for rendering:
 
 - **Karaoke highlighting** — drive a `TimelineView`/`CADisplayLink` clock off playback position; for each line where `start <= t < end`, highlight words where `word.start <= t`, and within multi-syllable words, syllables where `syllable.start <= t`.
 - **Instrumental breaks** — a gap between `line.end` and the next line's `start` is real silence (end times are honest); show a dots/progress placeholder when it exceeds a few seconds.
@@ -325,7 +398,7 @@ With auth enabled, clients authenticate once and reuse a JWT:
 ### Step 8 — Wire it into Swift
 
 ```swift
-import BetterLyricsKit
+import SyncedLyricsKit
 
 func fetchLyrics(videoId: String, song: String, artist: String, jwt: String) async throws -> ParsedLyrics? {
     var components = URLComponents(string: "https://your-worker.your-account.workers.dev/lyrics")!
@@ -373,6 +446,10 @@ TrackMetadataNormalizer.cacheKey(title: "Song (feat. X)", artist: "Artist")
 - The parsing and structuring logic originated in **MiniMusix**, a macOS music companion app, and was extracted, restructured, and hardened into this standalone package.
 - Lyrics aggregation backend: [**better-lyrics/cf-api**](https://github.com/better-lyrics/cf-api).
 - Lyric data providers this ecosystem builds on: [Musixmatch](https://www.musixmatch.com/), [LRCLIB](https://lrclib.net/), Binimum, GoLyrics, QQ Music, and Kugou.
+
+## Contributing
+
+Issues and pull requests are welcome — bug reports with sample lyric payloads are especially useful, since real-world format quirks drive most of this package's edge-case handling.
 
 ## License
 
