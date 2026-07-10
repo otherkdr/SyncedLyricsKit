@@ -54,14 +54,14 @@ BetterLyricsKit is macOS-focused because syllable-timed lyric rendering is prima
 ### Swift Package Manager (Xcode)
 
 1. In Xcode: **File → Add Package Dependencies…**
-2. Enter the repository URL for BetterLyricsKit.
+2. Enter the repository URL: `https://github.com/otherkdr/BetterLyricsKit`
 3. Add the **BetterLyricsKit** library to your target.
 
 ### Package.swift
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_USERNAME/BetterLyricsKit.git", from: "1.0.0")
+    .package(url: "https://github.com/otherkdr/BetterLyricsKit.git", from: "1.0.0")
 ],
 targets: [
     .target(
