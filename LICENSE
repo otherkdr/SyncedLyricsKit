@@ -1,47 +1,54 @@
-# SyncedLyricsKit Source Available License
+SyncedLyricsKit Source Available License
 
 Copyright (c) 2026 otherkdr
 
-## Permission to Use
+Permission to Use
 
 Permission is granted to any person to use, copy, modify, and distribute the materials contained within this repository, including source code, documentation, and associated files, subject to the conditions outlined below.
 
-## Open Source Usage
+Open Source Usage
 
 You are permitted to use SyncedLyricsKit in open-source projects, including projects that modify, extend, or build upon this repository, provided that:
 
-* This license and copyright notice are included with any distribution.
-* Modifications to SyncedLyricsKit are clearly documented.
-* You do not claim that your modifications are the original SyncedLyricsKit project.
-* The project name, branding, and trademarks are not used to imply official affiliation without permission.
+This license and copyright notice are included with any distribution.
 
-## Closed Source Usage
+Modifications to SyncedLyricsKit are clearly documented.
+
+You do not claim that your modifications are the original SyncedLyricsKit project.
+
+The project name, branding, and trademarks are not used to imply official affiliation without permission.
+
+Closed Source Usage
 
 Use of SyncedLyricsKit or any portion of its source code in closed-source, proprietary, or private applications requires prior written permission from the copyright holder.
 
 To request permission for closed-source usage, contact:
 
-Email: [malibair@hotmail.com](mailto:malibair@hotmail.com)
+[malibair@hotmail.com](mailto:malibair@hotmail.com)
 
 Closed-source usage includes, but is not limited to:
 
-* Integrating SyncedLyricsKit into applications where source code is not publicly available.
-* Redistributing modified versions of SyncedLyricsKit as proprietary software.
-* Using SyncedLyricsKit as part of a commercial product without permission.
+Integrating SyncedLyricsKit into applications where source code is not publicly available.
 
-## Attribution
+Redistributing modified versions of SyncedLyricsKit as proprietary software.
+
+Using SyncedLyricsKit as part of a commercial product without permission.
+
+Attribution
 
 Projects using SyncedLyricsKit must provide appropriate attribution to the original project and copyright holder.
 
-## Restrictions
+Restrictions
 
 You may not:
 
-* Remove or alter copyright notices.
-* Present SyncedLyricsKit or modified versions as your own original work.
-* Use the SyncedLyricsKit name, logo, or branding without explicit permission.
+Remove or alter copyright notices.
 
-## Disclaimer
+Present SyncedLyricsKit or modified versions as your own original work.
+
+Use the SyncedLyricsKit name, logo, or branding without explicit permission.
+
+Disclaimer
 
 SyncedLyricsKit is provided "as is", without warranty of any kind, express or implied. The copyright holder is not liable for any damages or issues arising from the use of this software.
 
