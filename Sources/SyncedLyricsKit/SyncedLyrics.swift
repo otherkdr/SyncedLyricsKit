@@ -19,36 +19,36 @@ public enum SyncedLyrics {
     ///
     /// Returns `nil` when the input contains nothing usable.
     public static func parse(_ raw: String, logger: LyricsLogger? = nil) -> ParsedLyrics? {
-        logger?("SyncedLyrics: starting parse")
+        logger?("SyncedLyrics: starting parse for input of length \(raw.count)")
 
         if let unwrapped = unwrapNestedPayload(raw), unwrapped != raw {
-            logger?("SyncedLyrics: unwrapped nested payload")
+            logger?("SyncedLyrics: unwrapped a nested JSON/string payload before parsing")
             return parse(unwrapped, logger: logger)
         }
 
         if raw.contains("<tt") {
-            logger?("SyncedLyrics: attempting TTML parsing")
+            logger?("SyncedLyrics: attempting TTML parsing because the input looks like TTML")
             let lines = TTMLParser().parse(raw, logger: logger)
             if !lines.isEmpty {
-                logger?("SyncedLyrics: parsed \(lines.count) TTML line(s)")
+                logger?("SyncedLyrics: parsed \(lines.count) TTML line(s) successfully")
                 return .timed(lines)
             }
         }
 
-        logger?("SyncedLyrics: attempting LRC parsing")
+        logger?("SyncedLyrics: attempting LRC parsing as a fallback format")
         let lines = LRCParser().parse(raw, logger: logger)
         if !lines.isEmpty {
-            logger?("SyncedLyrics: parsed \(lines.count) LRC line(s)")
+            logger?("SyncedLyrics: parsed \(lines.count) LRC line(s) successfully")
             return .timed(lines)
         }
 
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            logger?("SyncedLyrics: input was empty")
+            logger?("SyncedLyrics: input was empty after trimming, so no lyrics were parsed")
             return nil
         }
 
-        logger?("SyncedLyrics: falling back to plain text")
+        logger?("SyncedLyrics: falling back to plain text because no timed lyrics were found")
         return .plain(trimmed)
     }
 
@@ -56,14 +56,14 @@ public enum SyncedLyrics {
     /// already know the format, or when you have a timing hint from the
     /// source (see ``TTMLTimingHint``).
     public static func parse(ttml: String, timing: TTMLTimingHint = .automatic, logger: LyricsLogger? = nil) -> ParsedLyrics? {
-        logger?("SyncedLyrics: parsing TTML directly")
+        logger?("SyncedLyrics: parsing TTML directly with timing hint \(timing)")
         let lines = TTMLParser().parse(ttml, timing: timing, logger: logger)
         return lines.isEmpty ? nil : .timed(lines)
     }
 
     /// Parses a known-LRC document (standard or enhanced/rich-sync).
     public static func parse(lrc: String, logger: LyricsLogger? = nil) -> ParsedLyrics? {
-        logger?("SyncedLyrics: parsing LRC directly")
+        logger?("SyncedLyrics: parsing LRC directly as a known LRC document")
         let lines = LRCParser().parse(lrc, logger: logger)
         return lines.isEmpty ? nil : .timed(lines)
     }

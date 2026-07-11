@@ -14,6 +14,9 @@ public enum LyricsFetchError: Error, Sendable {
 
 /// Configuration for ``LyricsFetcher``.
 public struct LyricsFetcherConfiguration: Sendable {
+    /// Default plist filename read from the app's support directory.
+    public static let defaultSecretsFileName = "Secrets.plist"
+
     /// A placeholder worker URL. **Replace this with your own deployment** —
     /// see the README's *Setting Up a Lyrics Backend* section for how to
     /// create and deploy a [better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)
@@ -67,6 +70,98 @@ public struct LyricsFetcherConfiguration: Sendable {
         self.requestTimeout = requestTimeout
         self.resourceTimeout = resourceTimeout
     }
+
+    public init(contentsOf plistURL: URL) throws {
+        let data = try Data(contentsOf: plistURL)
+        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        guard let dictionary = plist as? [String: Any] else {
+            throw LyricsFetchError.invalidURL
+        }
+
+        let workerBaseURL = (dictionary["WorkerBaseURL"] as? String).flatMap(URL.init(string:))
+            ?? Self.placeholderWorkerBaseURL
+        let googleAPIKey = (dictionary["GoogleAPIKey"] as? String) ?? ""
+        let authorizationToken = dictionary["AuthorizationToken"] as? String
+        let userAgent = (dictionary["UserAgent"] as? String) ?? "SyncedLyricsKit/1.0 (+https://github.com/otherkdr/SyncedLyricsKit)"
+        let requestTimeout = (dictionary["RequestTimeout"] as? NSNumber)?.doubleValue ?? 8
+        let resourceTimeout = (dictionary["ResourceTimeout"] as? NSNumber)?.doubleValue ?? 12
+
+        self.init(
+            workerBaseURL: workerBaseURL,
+            googleAPIKey: googleAPIKey,
+            authorizationToken: authorizationToken,
+            userAgent: userAgent,
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout
+        )
+    }
+
+    public static func makeDefault(
+        plistURL: URL? = nil,
+        environment: [String: String]? = nil
+    ) -> LyricsFetcherConfiguration {
+        let effectiveEnvironment = environment ?? ProcessInfo.processInfo.environment
+        let preferredPlistURL = plistURL ?? Self.preferredSecretsPlistURL()
+
+        if let preferredPlistURL,
+           let loaded = try? LyricsFetcherConfiguration(contentsOf: preferredPlistURL) {
+            return loaded
+        }
+
+        let googleAPIKey = effectiveEnvironment["SYNCED_LYRICS_GOOGLE_API_KEY"]
+            ?? effectiveEnvironment["GOOGLE_API_KEY"]
+            ?? ""
+        let authorizationToken = effectiveEnvironment["SYNCED_LYRICS_AUTHORIZATION_TOKEN"]
+            ?? effectiveEnvironment["LYRICS_AUTHORIZATION_TOKEN"]
+        let workerBaseURL = (effectiveEnvironment["SYNCED_LYRICS_WORKER_BASE_URL"]
+            ?? effectiveEnvironment["WORKER_BASE_URL"]).flatMap(URL.init(string:))
+            ?? Self.placeholderWorkerBaseURL
+        let userAgent = effectiveEnvironment["SYNCED_LYRICS_USER_AGENT"]
+            ?? "SyncedLyricsKit/1.0 (+https://github.com/otherkdr/SyncedLyricsKit)"
+        let requestTimeout = (effectiveEnvironment["SYNCED_LYRICS_REQUEST_TIMEOUT"]).flatMap(Double.init) ?? 8
+        let resourceTimeout = (effectiveEnvironment["SYNCED_LYRICS_RESOURCE_TIMEOUT"]).flatMap(Double.init) ?? 12
+
+        return LyricsFetcherConfiguration(
+            workerBaseURL: workerBaseURL,
+            googleAPIKey: googleAPIKey,
+            authorizationToken: authorizationToken,
+            userAgent: userAgent,
+            requestTimeout: requestTimeout,
+            resourceTimeout: resourceTimeout
+        )
+    }
+
+    static func preferredSecretsPlistURL(fileName: String = defaultSecretsFileName) -> URL? {
+        let directories = [
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        ].compactMap { $0 }
+
+        for directory in directories {
+            let url = directory.appendingPathComponent(fileName)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    public static func loadFromUserSecretsPlist(fileName: String = defaultSecretsFileName) throws -> LyricsFetcherConfiguration {
+        let directories = [
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        ].compactMap { $0 }
+
+        for directory in directories {
+            let url = directory.appendingPathComponent(fileName)
+            if FileManager.default.fileExists(atPath: url.path) {
+                return try LyricsFetcherConfiguration(contentsOf: url)
+            }
+        }
+
+        throw LyricsFetchError.invalidURL
+    }
 }
 
 /// The full SyncedLyrics fetching pipeline, ready to drop behind any
@@ -110,7 +205,7 @@ public struct LyricsFetcherConfiguration: Sendable {
 /// )
 /// ```
 public actor LyricsFetcher {
-    private let configuration: LyricsFetcherConfiguration
+    private var configuration: LyricsFetcherConfiguration
     private let session: URLSession
     private let cache: LyricsDiskCache?
     private let logger: LyricsLogger?
@@ -128,12 +223,23 @@ public actor LyricsFetcher {
     ///     persistence, waits for connectivity, bypasses the URL cache since
     ///     caching is handled explicitly).
     public init(
-        configuration: LyricsFetcherConfiguration,
+        configuration: LyricsFetcherConfiguration? = nil,
         cache: LyricsDiskCache? = nil,
         session: URLSession? = nil,
-        logger: LyricsLogger? = nil
+        logger: LyricsLogger? = nil,
+        useUserSecretsPlist: Bool = true
     ) {
-        self.configuration = configuration
+        let resolvedConfiguration: LyricsFetcherConfiguration
+        if let configuration {
+            resolvedConfiguration = configuration
+        } else if useUserSecretsPlist, let plistURL = Self.preferredSecretsPlistURL(), let loaded = try? LyricsFetcherConfiguration(contentsOf: plistURL) {
+            resolvedConfiguration = loaded
+            logger?("LyricsFetcher: loaded runtime configuration from \(plistURL.lastPathComponent)")
+        } else {
+            resolvedConfiguration = LyricsFetcherConfiguration.makeDefault()
+        }
+
+        self.configuration = resolvedConfiguration
         self.cache = cache
         self.logger = logger
 
@@ -141,12 +247,16 @@ public actor LyricsFetcher {
             self.session = session
         } else {
             let sessionConfiguration = URLSessionConfiguration.ephemeral
-            sessionConfiguration.timeoutIntervalForRequest = configuration.requestTimeout
-            sessionConfiguration.timeoutIntervalForResource = configuration.resourceTimeout
+            sessionConfiguration.timeoutIntervalForRequest = resolvedConfiguration.requestTimeout
+            sessionConfiguration.timeoutIntervalForResource = resolvedConfiguration.resourceTimeout
             sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
             sessionConfiguration.waitsForConnectivity = true
             self.session = URLSession(configuration: sessionConfiguration)
         }
+    }
+
+    private static func preferredSecretsPlistURL() -> URL? {
+        LyricsFetcherConfiguration.preferredSecretsPlistURL()
     }
 
     // MARK: - Public API
@@ -166,11 +276,11 @@ public actor LyricsFetcher {
         let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = configuration.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if key.isEmpty {
-            logger?("LyricsFetcher: missing Google API key")
+            logger?("LyricsFetcher: missing Google API key; YouTube topic-video resolution cannot proceed")
             throw LyricsFetchError.missingGoogleAPIKey
         }
 
-        logger?("LyricsFetcher: fetching lyrics for \(trimmedTitle) by \(trimmedArtist)")
+        logger?("LyricsFetcher: starting lyrics fetch for '\(trimmedTitle)' by '\(trimmedArtist)'")
         let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestKey = [
             TrackMetadataNormalizer.normalized(trimmedTitle),
@@ -184,7 +294,7 @@ public actor LyricsFetcher {
         // upstream failure would otherwise be served forever.
         if let cached = await cache?.lyrics(title: trimmedTitle, artist: trimmedArtist, album: trimmedAlbum, duration: duration),
            !cached.isEmpty {
-            logger?("LyricsFetcher: serving cached lyrics")
+            logger?("LyricsFetcher: serving cached lyrics for this track because a valid entry exists")
             return cached
         }
 
@@ -193,7 +303,7 @@ public actor LyricsFetcher {
             return try await inFlight.value
         }
 
-        logger?("LyricsFetcher: starting network fetch")
+        logger?("LyricsFetcher: starting network fetch for the worker-backed lyrics request")
         let task = Task<ParsedLyrics?, Error> {
             try await self.performFetch(
                 title: trimmedTitle,
@@ -227,9 +337,9 @@ public actor LyricsFetcher {
         album: String,
         duration: TimeInterval
     ) async throws -> ParsedLyrics? {
-        logger?("LyricsFetcher: resolving topic video")
+        logger?("LyricsFetcher: resolving the official YouTube topic video for the requested track")
         let resolution = try await resolveTopicVideo(title: title, artist: artist, album: album)
-        logger?("LyricsFetcher: requesting worker for video \(resolution.videoId)")
+        logger?("LyricsFetcher: requesting lyrics from the worker using topic video \(resolution.videoId)")
         let (data, response) = try await requestWorker(
             videoId: resolution.videoId,
             title: title.isEmpty ? (resolution.inferredTitle ?? "") : title,
@@ -247,21 +357,21 @@ public actor LyricsFetcher {
         // selection.
         if let decoded = try? JSONDecoder().decode(WorkerLyricsResponse.self, from: data),
            let lyrics = decoded.bestLyrics(logger: logger), !lyrics.isEmpty {
-            logger?("LyricsFetcher: parsed lyrics from worker response")
+            logger?("LyricsFetcher: parsed lyrics successfully from the worker response")
             return lyrics
         }
 
         // The shape didn't match (worker fork, schema drift) — scan the raw
         // JSON for anything that looks like lyrics under the known keys.
         if let lyrics = Self.lyricsFromRawJSON(data), !lyrics.isEmpty {
-            logger?("LyricsFetcher: parsed lyrics from raw JSON fallback")
+            logger?("LyricsFetcher: parsed lyrics from the raw JSON fallback path because the response shape did not match the expected model")
             return lyrics
         }
 
         // Last resort: the response may point at the lyrics rather than
         // embed them. Follow any URLs it contains and parse what they serve.
         if let lyrics = await lyricsFromEmbeddedURLs(in: data), !lyrics.isEmpty {
-            logger?("LyricsFetcher: parsed lyrics from embedded URL fallback")
+            logger?("LyricsFetcher: parsed lyrics from an embedded URL fallback because the worker did not return lyrics inline")
             return lyrics
         }
 
@@ -381,6 +491,9 @@ public actor LyricsFetcher {
         var request = makeRequest(url: url)
         if let token = configuration.authorizationToken {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            logger?("LyricsFetcher: attached authorization token to the worker request")
+        } else {
+            logger?("LyricsFetcher: no authorization token was configured, so the worker request will proceed without one")
         }
         return try await session.data(for: request)
     }
@@ -512,8 +625,17 @@ public actor LyricsFetcher {
     /// symbol-sanitized titles follow; bare-metadata fallbacks close it out.
     static func searchQueries(title: String, artist: String, album: String) -> [String] {
         func compact(_ value: String) -> String {
-            value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            let cleaned = value
+                .replacingOccurrences(of: #"\s*\([^)]*\)"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(of: #"\s*\[[^\]]*\]"#, with: " ", options: .regularExpression)
+                .replacingOccurrences(
+                    of: #"\b(feat|ft|featuring|with)\b\.?\s+[^-()\[\]]+"#,
+                    with: " ",
+                    options: .regularExpression
+                )
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespaces)
+            return cleaned
         }
 
         let song = compact(title)

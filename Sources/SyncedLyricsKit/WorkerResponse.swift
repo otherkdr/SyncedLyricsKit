@@ -93,7 +93,7 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
         // First pass: prefer sources that actually deliver word timing.
         for candidate in [binimum, goLyricsTtml, musixmatchRich] {
             if let lines = candidate, !lines.isEmpty, hasWordTiming(lines) {
-                logger?("WorkerLyricsResponse: selected word-timed source")
+                logger?("WorkerLyricsResponse: selected a word-timed or syllable-timed source because it provided the richest timing")
                 return .timed(lines)
             }
         }
@@ -102,7 +102,7 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
         // they tend to have better text quality.
         for candidate in [binimum, goLyricsTtml, musixmatchRich] {
             if let lines = candidate, !lines.isEmpty {
-                logger?("WorkerLyricsResponse: selected line-level source")
+                logger?("WorkerLyricsResponse: selected a line-level source because richer timing was not available")
                 return .timed(lines)
             }
         }
@@ -116,13 +116,13 @@ public struct WorkerLyricsResponse: Sendable, Decodable {
         ]
         for source in lineLevelSources {
             if let source, case let lines = lrcParser.parse(source, logger: logger), !lines.isEmpty {
-                logger?("WorkerLyricsResponse: selected LRC source")
+                logger?("WorkerLyricsResponse: selected an LRC-based source from the worker payload")
                 return .timed(lines)
             }
         }
 
         if let plain = lrclibPlainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines), !plain.isEmpty {
-            logger?("WorkerLyricsResponse: falling back to plain text")
+            logger?("WorkerLyricsResponse: falling back to plain text because no synced lyrics were available")
             return .plain(plain)
         }
 

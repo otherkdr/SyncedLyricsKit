@@ -17,6 +17,13 @@ struct LyricsFetcherTests {
         #expect(queries.contains("Frank Ocean Pink White topic"))
     }
 
+    @Test("Parenthetical featured-artist qualifiers produce a cleaner query")
+    func parentheticalFeaturedArtistQuery() {
+        let queries = LyricsFetcher.searchQueries(title: "Stars Align (with Drake)", artist: "Jhené Aiko", album: "")
+        #expect(queries.contains("Jhené Aiko Stars Align topic"))
+        #expect(queries.contains("Stars Align topic"))
+    }
+
     @Test("Missing artist falls back to lyrics/audio queries")
     func missingArtistQueries() {
         let queries = LyricsFetcher.searchQueries(title: "Song", artist: "", album: "")
@@ -52,6 +59,43 @@ struct LyricsFetcherTests {
 
         let neither = LyricsFetcher.VideoCandidate(videoId: "c", channelTitle: "Random", title: "Something Else")
         #expect(!LyricsFetcher.candidateMatches(neither, title: title, artist: artist))
+    }
+
+    @Test("Configuration can be loaded from a secrets plist")
+    func secretsPlistConfiguration() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let plistURL = directory.appendingPathComponent("Secrets.plist")
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "GoogleAPIKey": "abc123",
+                "AuthorizationToken": "token123",
+                "WorkerBaseURL": "https://example.com"
+            ],
+            format: .xml,
+            options: 0
+        )
+        try data.write(to: plistURL)
+
+        let config = try LyricsFetcherConfiguration(contentsOf: plistURL)
+        #expect(config.googleAPIKey == "abc123")
+        #expect(config.authorizationToken == "token123")
+        #expect(config.workerBaseURL.absoluteString == "https://example.com/")
+    }
+
+    @Test("Default configuration reads environment variables when no plist is present")
+    func defaultConfigurationUsesEnvironment() {
+        let config = LyricsFetcherConfiguration.makeDefault(environment: [
+            "SYNCED_LYRICS_GOOGLE_API_KEY": "env-key",
+            "SYNCED_LYRICS_AUTHORIZATION_TOKEN": "env-token",
+            "SYNCED_LYRICS_WORKER_BASE_URL": "https://env.example.com"
+        ])
+
+        #expect(config.googleAPIKey == "env-key")
+        #expect(config.authorizationToken == "env-token")
+        #expect(config.workerBaseURL.absoluteString == "https://env.example.com/")
     }
 
     @Test("An empty Google API key throws before any network call")
