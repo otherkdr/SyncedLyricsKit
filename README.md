@@ -69,7 +69,7 @@ SyncedLyricsKit is macOS-focused because syllable-timed lyric rendering is prima
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/otherkdr/SyncedLyricsKit.git", from: "1.0.0")
+    .package(url: "https://github.com/otherkdr/SyncedLyricsKit.git", from: "1.1.1")
 ],
 targets: [
     .target(
