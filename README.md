@@ -312,7 +312,8 @@ This is the full path from zero to fetching word-by-word lyrics your app can par
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier works)
 - Node.js 18+ and npm
 - A [Google Cloud](https://console.cloud.google.com/) API key (YouTube Data API v3 — used to resolve song metadata from video IDs)
-- A [Musixmatch developer](https://developer.musixmatch.com/) API key (for word-by-word lyrics)
+
+The lyric providers themselves — Musixmatch, LRCLIB, GoLyrics, QQ Music, Kugou — need **no API keys**; the worker reaches them through keyless endpoints. The Google key is the only provider credential you supply.
 
 ### Step 1 — Clone and install
 
@@ -355,9 +356,9 @@ namespace_id = "YOUR_RATE_LIMIT_NAMESPACE_ID"
 1. Dashboard → **Turnstile** → create a site (Managed Challenge mode; use `localhost` for testing).
 2. Note the **Site Key** and **Secret Key** for the next step.
 
-### Step 3 — API keys
+### Step 3 — API key
 
-These keys are consumed **by the worker, server-side** — the Swift client itself needs no API key (topic-video resolution runs keyless through YouTubeKit).
+Only one key is consumed **by the worker, server-side** — the Swift client itself needs no API key (topic-video resolution runs keyless through YouTubeKit).
 
 **Google (YouTube Data API v3):**
 
@@ -365,12 +366,7 @@ These keys are consumed **by the worker, server-side** — the Swift client itse
 2. Enable **YouTube Data API v3**.
 3. Credentials → *Create Credentials → API Key*; restrict it to YouTube Data API v3.
 
-**Musixmatch:**
-
-1. Sign up at [developer.musixmatch.com](https://developer.musixmatch.com/).
-2. Create an application and copy your API key.
-
-**LRCLIB** needs no key — it's free and already integrated.
+**Musixmatch, LRCLIB, GoLyrics, QQ Music, and Kugou** need no keys — they're reached through keyless endpoints and are already integrated.
 
 ### Step 4 — Environment variables
 
@@ -380,7 +376,6 @@ For local development, create `.dev.vars` in the repo root (never commit it):
 TURNSTILE_SECRET_KEY=your_turnstile_secret_key
 TURNSTILE_SITE_KEY=your_turnstile_site_key
 GOOGLE_API_KEY=your_google_api_key
-MUSIXMATCH_API_KEY=your_musixmatch_api_key
 ```
 
 For local testing you can also set `BYPASS_AUTH = "true"` under `[vars]` in `wrangler.toml` to skip the Turnstile/JWT flow (**never in production**).
@@ -406,7 +401,6 @@ Push your secrets and deploy:
 ```bash
 wrangler secret put TURNSTILE_SECRET_KEY
 wrangler secret put GOOGLE_API_KEY
-wrangler secret put MUSIXMATCH_API_KEY
 npm run deploy
 ```
 
@@ -475,6 +469,14 @@ TrackMetadataNormalizer.cacheKey(title: "Song (feat. X)", artist: "Artist")
 ## Contributing
 
 Issues and pull requests are welcome — bug reports with sample lyric payloads are especially useful, since real-world format quirks drive most of this package's edge-case handling.
+
+Run the tests with the native build system:
+
+```bash
+swift test --build-system native
+```
+
+The default SwiftPM build system leaves an unremovable `com.apple.provenance` xattr on the signed test bundle, which fails codesigning on macOS; `--build-system native` avoids it. CI runs exactly this command.
 
 ## License
 

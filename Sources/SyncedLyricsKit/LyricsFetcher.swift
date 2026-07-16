@@ -249,6 +249,12 @@ public actor LyricsFetcher {
     /// Concurrent calls for the same track share one request. Returns `nil`
     /// when everything worked but no source had lyrics; throws for
     /// configuration and transport failures.
+    ///
+    /// - Important: Pass an accurate `duration` whenever you have one.
+    ///   Several providers (LRCLIB in particular) match on duration, so a
+    ///   track that *does* have lyrics can come back `nil` when `duration` is
+    ///   left at `0`. A `nil` result therefore means "no lyrics found for the
+    ///   metadata given," not necessarily "no lyrics exist."
     public func fetchLyrics(
         title: String,
         artist: String,

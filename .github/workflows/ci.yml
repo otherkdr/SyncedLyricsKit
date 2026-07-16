@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & test (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Swift version
+        run: swift --version
+
+      # The default SwiftPM build system leaves an unremovable
+      # com.apple.provenance xattr on the signed test bundle, which fails
+      # codesigning; the native build system avoids it.
+      - name: Run tests
+        run: swift test --build-system native
