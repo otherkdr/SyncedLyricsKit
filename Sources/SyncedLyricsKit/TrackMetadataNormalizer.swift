@@ -17,6 +17,12 @@ public enum TrackMetadataNormalizer {
         value
             .folding(options: [.diacriticInsensitive, .widthInsensitive, .caseInsensitive], locale: .current)
             .lowercased()
+            // Connective symbols stand in for the word "and" ("Fire & Desire"
+            // == "Fire and Desire"). Map them before punctuation is stripped,
+            // otherwise the symbol collapses to nothing and the two spellings
+            // normalize differently — the "Fire and Desire bug".
+            .replacingOccurrences(of: "&", with: " and ")
+            .replacingOccurrences(of: "+", with: " and ")
             .replacingOccurrences(
                 of: #"\b(feat|ft|featuring|with)\b\.?\s+[^-()\[\]]+"#,
                 with: "",

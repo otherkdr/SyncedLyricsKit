@@ -9,8 +9,11 @@ let package = Package(
     products: [
         .library(name: "SyncedLyricsKit", targets: ["SyncedLyricsKit"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/b5i/YouTubeKit", from: "2.8.0")
+    ],
     targets: [
-        .target(name: "SyncedLyricsKit"),
+        .target(name: "SyncedLyricsKit", dependencies: ["YouTubeKit"]),
         .testTarget(name: "SyncedLyricsKitTests", dependencies: ["SyncedLyricsKit"])
     ]
 )

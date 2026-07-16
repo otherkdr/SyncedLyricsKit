@@ -2,8 +2,6 @@ import Foundation
 
 /// Errors thrown by ``LyricsFetcher``.
 public enum LyricsFetchError: Error, Sendable {
-    /// No Google API key was configured; YouTube search requires one.
-    case missingGoogleAPIKey
     /// A request URL could not be constructed.
     case invalidURL
     /// The server answered with a non-200 status code.
@@ -27,19 +25,6 @@ public struct LyricsFetcherConfiguration: Sendable {
     /// e.g. `https://lyrics-api.my-account.workers.dev`.
     public var workerBaseURL: URL
 
-    /// A Google Cloud API key with the **YouTube Data API v3** enabled.
-    ///
-    /// This key is used exclusively for `search.list` calls that resolve the
-    /// currently playing track to its official "Topic" video ID — the worker
-    /// needs that video ID to aggregate lyrics. Create one in the
-    /// [Google Cloud Console](https://console.cloud.google.com/): enable
-    /// *YouTube Data API v3*, then *Credentials → Create Credentials → API
-    /// Key*, and restrict the key to that API. Each `search.list` call costs
-    /// 100 quota units of the 10,000/day free tier; the fetcher caches
-    /// resolved video IDs in memory (and, with a ``LyricsDiskCache``, whole
-    /// results on disk) so repeat plays don't re-spend it.
-    public var googleAPIKey: String
-
     /// JWT for the worker's `Authorization: Bearer` header, obtained via its
     /// Turnstile challenge flow. Leave `nil` when the worker runs with
     /// `BYPASS_AUTH = "true"` (local development only).
@@ -57,14 +42,12 @@ public struct LyricsFetcherConfiguration: Sendable {
 
     public init(
         workerBaseURL: URL = placeholderWorkerBaseURL,
-        googleAPIKey: String,
         authorizationToken: String? = nil,
         userAgent: String = "SyncedLyricsKit/1.0 (+https://github.com/otherkdr/SyncedLyricsKit)",
         requestTimeout: TimeInterval = 8,
         resourceTimeout: TimeInterval = 12
     ) {
         self.workerBaseURL = workerBaseURL
-        self.googleAPIKey = googleAPIKey
         self.authorizationToken = authorizationToken
         self.userAgent = userAgent
         self.requestTimeout = requestTimeout
@@ -80,7 +63,6 @@ public struct LyricsFetcherConfiguration: Sendable {
 
         let workerBaseURL = (dictionary["WorkerBaseURL"] as? String).flatMap(URL.init(string:))
             ?? Self.placeholderWorkerBaseURL
-        let googleAPIKey = (dictionary["GoogleAPIKey"] as? String) ?? ""
         let authorizationToken = dictionary["AuthorizationToken"] as? String
         let userAgent = (dictionary["UserAgent"] as? String) ?? "SyncedLyricsKit/1.0 (+https://github.com/otherkdr/SyncedLyricsKit)"
         let requestTimeout = (dictionary["RequestTimeout"] as? NSNumber)?.doubleValue ?? 8
@@ -88,7 +70,6 @@ public struct LyricsFetcherConfiguration: Sendable {
 
         self.init(
             workerBaseURL: workerBaseURL,
-            googleAPIKey: googleAPIKey,
             authorizationToken: authorizationToken,
             userAgent: userAgent,
             requestTimeout: requestTimeout,
@@ -108,9 +89,6 @@ public struct LyricsFetcherConfiguration: Sendable {
             return loaded
         }
 
-        let googleAPIKey = effectiveEnvironment["SYNCED_LYRICS_GOOGLE_API_KEY"]
-            ?? effectiveEnvironment["GOOGLE_API_KEY"]
-            ?? ""
         let authorizationToken = effectiveEnvironment["SYNCED_LYRICS_AUTHORIZATION_TOKEN"]
             ?? effectiveEnvironment["LYRICS_AUTHORIZATION_TOKEN"]
         let workerBaseURL = (effectiveEnvironment["SYNCED_LYRICS_WORKER_BASE_URL"]
@@ -123,7 +101,6 @@ public struct LyricsFetcherConfiguration: Sendable {
 
         return LyricsFetcherConfiguration(
             workerBaseURL: workerBaseURL,
-            googleAPIKey: googleAPIKey,
             authorizationToken: authorizationToken,
             userAgent: userAgent,
             requestTimeout: requestTimeout,
@@ -167,11 +144,13 @@ public struct LyricsFetcherConfiguration: Sendable {
 /// The full SyncedLyrics fetching pipeline, ready to drop behind any
 /// now-playing source:
 ///
-/// 1. **Resolve** — searches YouTube (Data API v3) for the track as an
-///    official *"Topic"* video, scores every candidate, sanity-checks the
-///    winner against the metadata, and retries with stricter queries when
-///    the first pass looks off. When your player reports incomplete
-///    metadata, the resolved video's title fills the gaps.
+/// 1. **Resolve** — searches YouTube through
+///    [YouTubeKit](https://github.com/b5i/YouTubeKit) (YouTube's internal
+///    API — no Google API key, no quota) for the track as an official
+///    *"Topic"* video, scores every candidate, sanity-checks the winner
+///    against the metadata, and retries with stricter queries when the
+///    first pass looks off. When your player reports incomplete metadata,
+///    the resolved video's title fills the gaps.
 /// 2. **Fetch** — hands the video ID plus track metadata to your
 ///    [better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)
 ///    Cloudflare Worker.
@@ -193,8 +172,7 @@ public struct LyricsFetcherConfiguration: Sendable {
 /// ```swift
 /// let fetcher = LyricsFetcher(
 ///     configuration: .init(
-///         workerBaseURL: URL(string: "https://lyrics-api.my-account.workers.dev")!,
-///         googleAPIKey: "AIza…"
+///         workerBaseURL: URL(string: "https://lyrics-api.my-account.workers.dev")!
 ///     ),
 ///     cache: LyricsDiskCache()
 /// )
@@ -207,25 +185,29 @@ public struct LyricsFetcherConfiguration: Sendable {
 public actor LyricsFetcher {
     private var configuration: LyricsFetcherConfiguration
     private let session: URLSession
+    private let searchClient: any YouTubeSearchClient
     private let cache: LyricsDiskCache?
     private let logger: LyricsLogger?
 
     private var topicVideoCache: [String: String] = [:]
     private var inFlightFetches: [String: Task<ParsedLyrics?, Error>] = [:]
 
-    private static let youtubeSearchBaseURL = "https://www.googleapis.com/youtube/v3/search"
-
     /// - Parameters:
-    ///   - configuration: Endpoints, keys, and timeouts.
+    ///   - configuration: Endpoints, worker auth, and timeouts.
     ///   - cache: Optional persistent cache; strongly recommended for apps.
     ///   - session: Override for testing. When `nil`, an ephemeral session
     ///     is built from the configuration's timeouts (no cookie/credential
     ///     persistence, waits for connectivity, bypasses the URL cache since
-    ///     caching is handled explicitly).
+    ///     caching is handled explicitly). Used for worker and fallback-URL
+    ///     requests; topic-video search goes through `searchClient`.
+    ///   - searchClient: Override for testing. When `nil`, searches run
+    ///     through ``YouTubeKitSearchClient`` — YouTube's internal API, no
+    ///     Google API key required.
     public init(
         configuration: LyricsFetcherConfiguration? = nil,
         cache: LyricsDiskCache? = nil,
         session: URLSession? = nil,
+        searchClient: (any YouTubeSearchClient)? = nil,
         logger: LyricsLogger? = nil,
         useUserSecretsPlist: Bool = true
     ) {
@@ -240,6 +222,7 @@ public actor LyricsFetcher {
         }
 
         self.configuration = resolvedConfiguration
+        self.searchClient = searchClient ?? YouTubeKitSearchClient()
         self.cache = cache
         self.logger = logger
 
@@ -274,11 +257,6 @@ public actor LyricsFetcher {
     ) async throws -> ParsedLyrics? {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = configuration.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key.isEmpty {
-            logger?("LyricsFetcher: missing Google API key; YouTube topic-video resolution cannot proceed")
-            throw LyricsFetchError.missingGoogleAPIKey
-        }
 
         logger?("LyricsFetcher: starting lyrics fetch for '\(trimmedTitle)' by '\(trimmedArtist)'")
         let trimmedAlbum = album.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -387,9 +365,6 @@ public actor LyricsFetcher {
     }
 
     private func resolveTopicVideo(title: String, artist: String, album: String) async throws -> TopicVideoResolution {
-        let key = configuration.googleAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { throw LyricsFetchError.missingGoogleAPIKey }
-
         let normalizedTitle = TrackMetadataNormalizer.normalized(title)
         let normalizedArtist = TrackMetadataNormalizer.normalized(artist)
         let cacheKey = TrackMetadataNormalizer.cacheKey(title: title, artist: artist, album: album)
@@ -399,19 +374,19 @@ public actor LyricsFetcher {
         }
 
         for query in Self.searchQueries(title: title, artist: artist, album: album) {
-            guard let candidates = try? await searchYouTube(query: query, apiKey: key),
+            guard let candidates = try? await searchYouTube(query: query),
                   let best = Self.bestCandidate(from: candidates, title: normalizedTitle, artist: normalizedArtist) else {
                 continue
             }
 
-            if Self.candidateMatches(best, title: normalizedTitle, artist: normalizedArtist) {
+            if Self.candidateStronglyMatches(best, title: normalizedTitle, artist: normalizedArtist) {
                 topicVideoCache[cacheKey] = best.videoId
                 let inferred = Self.inferredMetadata(from: best, title: title, artist: artist)
                 return TopicVideoResolution(videoId: best.videoId, inferredTitle: inferred.title, inferredArtist: inferred.artist)
             }
 
-            // The top result didn't obviously match — retry with stricter,
-            // more explicit queries before settling for it.
+            // The top result didn't confidently match on its own title —
+            // retry with stricter, more explicit queries before settling.
             let stricterQueries = [
                 "\(artist) \(title) official audio",
                 "\(artist) \(title) official video",
@@ -420,9 +395,9 @@ public actor LyricsFetcher {
                 "\(title) \(artist) live"
             ]
             for stricter in stricterQueries {
-                guard let retried = try? await searchYouTube(query: stricter, apiKey: key),
+                guard let retried = try? await searchYouTube(query: stricter),
                       let candidate = Self.bestCandidate(from: retried, title: normalizedTitle, artist: normalizedArtist),
-                      Self.candidateMatches(candidate, title: normalizedTitle, artist: normalizedArtist) else {
+                      Self.candidateStronglyMatches(candidate, title: normalizedTitle, artist: normalizedArtist) else {
                     continue
                 }
                 topicVideoCache[cacheKey] = candidate.videoId
@@ -440,28 +415,43 @@ public actor LyricsFetcher {
         throw LyricsFetchError.noTopicVideoFound
     }
 
-    private func searchYouTube(query: String, apiKey: String) async throws -> [VideoCandidate] {
-        var components = URLComponents(string: Self.youtubeSearchBaseURL)
-        components?.queryItems = [
-            URLQueryItem(name: "part", value: "snippet"),
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "type", value: "video"),
-            // Category 10 = Music; keeps results on-topic.
-            URLQueryItem(name: "videoCategoryId", value: "10"),
-            URLQueryItem(name: "maxResults", value: "10"),
-            URLQueryItem(name: "key", value: apiKey)
-        ]
-        guard let url = components?.url else { throw LyricsFetchError.invalidURL }
-
-        let (data, response) = try await session.data(for: makeRequest(url: url))
-        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw LyricsFetchError.requestFailed(statusCode: http.statusCode)
+    private func searchYouTube(query: String) async throws -> [VideoCandidate] {
+        let maxAttempts = 2
+        var lastError: Error?
+        for attempt in 1...maxAttempts {
+            do {
+                return try await searchClient.searchVideos(matching: query)
+            } catch let error as URLError where Self.isRetryableSearchError(error) && attempt < maxAttempts {
+                lastError = error
+                logger?("LyricsFetcher: YouTube search request timed out or was interrupted for query '\(query)', retrying (attempt \(attempt)/\(maxAttempts))")
+            } catch {
+                lastError = error
+                if attempt < maxAttempts {
+                    logger?("LyricsFetcher: YouTube search request failed for query '\(query)', retrying (attempt \(attempt)/\(maxAttempts))")
+                }
+            }
         }
 
-        let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
-        return decoded.items.compactMap { item in
-            guard let id = item.id.videoId, !id.isEmpty else { return nil }
-            return VideoCandidate(videoId: id, channelTitle: item.snippet.channelTitle, title: item.snippet.title)
+        if let lastError {
+            throw lastError
+        }
+        throw LyricsFetchError.invalidURL
+    }
+
+    static func isRetryableSearchError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+
+        switch urlError.code {
+        case .timedOut,
+             .networkConnectionLost,
+             .notConnectedToInternet,
+             .cannotFindHost,
+             .cannotConnectToHost,
+             .dnsLookupFailed,
+             .resourceUnavailable:
+            return true
+        default:
+            return false
         }
     }
 
@@ -613,11 +603,7 @@ public actor LyricsFetcher {
 
     // MARK: - Pure helpers (internal for testability)
 
-    struct VideoCandidate: Sendable {
-        let videoId: String
-        let channelTitle: String
-        let title: String
-    }
+    typealias VideoCandidate = YouTubeVideoCandidate
 
     /// Builds the ordered YouTube query list for a track. "Topic" queries
     /// come first because official auto-generated `Artist - Topic` channels
@@ -706,7 +692,10 @@ public actor LyricsFetcher {
         return candidates.max { score($0) < score($1) }
     }
 
-    /// Sanity check that a candidate plausibly is the searched track.
+    /// Sanity check that a candidate plausibly is the searched track. Loose
+    /// on purpose: a same-artist channel counts, so a known artist always
+    /// resolves *something*. Good enough as a last resort, but too weak to
+    /// stop searching — see ``candidateStronglyMatches``.
     static func candidateMatches(_ candidate: VideoCandidate, title: String, artist: String) -> Bool {
         let videoTitle = TrackMetadataNormalizer.normalized(candidate.title)
         let channel = TrackMetadataNormalizer.normalized(candidate.channelTitle)
@@ -714,6 +703,21 @@ public actor LyricsFetcher {
         if !artist.isEmpty, videoTitle.contains(artist) { return true }
         if !artist.isEmpty, channel.contains(artist) { return true }
         return false
+    }
+
+    /// A confident match: the candidate's *own title* carries the track
+    /// title. Used to decide whether to stop searching. A mere same-artist
+    /// "- Topic" channel is not enough — accepting that shortcut caused the
+    /// "Fire and Desire bug", where the songs search returned a *different*
+    /// track from the right artist ("Desires" for "Fire & Desire") and the
+    /// loose channel match rubber-stamped it before the stricter,
+    /// title-bearing queries ever ran. With no title to check against, there
+    /// is nothing stronger to require, so fall back to the loose signal.
+    static func candidateStronglyMatches(_ candidate: VideoCandidate, title: String, artist: String) -> Bool {
+        guard !title.isEmpty else {
+            return candidateMatches(candidate, title: title, artist: artist)
+        }
+        return TrackMetadataNormalizer.normalized(candidate.title).contains(title)
     }
 
     /// Fills gaps in the caller's metadata from the resolved video: an
@@ -745,23 +749,4 @@ public actor LyricsFetcher {
         )
     }
 
-    // MARK: - YouTube response shapes
-
-    private struct SearchResponse: Decodable {
-        let items: [Item]
-    }
-
-    private struct Item: Decodable {
-        let id: ItemId
-        let snippet: Snippet
-    }
-
-    private struct ItemId: Decodable {
-        let videoId: String?
-    }
-
-    private struct Snippet: Decodable {
-        let channelTitle: String
-        let title: String
-    }
 }

@@ -23,6 +23,7 @@ Give it raw lyric data — TTML (including the Apple Music dialect), standard LR
 - [Working with Worker Responses](#working-with-worker-responses)
 - [Fetching (LyricsFetcher)](#fetching-lyricsfetcher)
 - [Caching (LyricsDiskCache)](#caching-lyricsdiskcache)
+- [Basic SwiftUI Renderer](#basic-swiftui-renderer)
 - [Rendering Guidance](#rendering-guidance)
 - [Setting Up a Lyrics Backend (better-lyrics/cf-api)](#setting-up-a-lyrics-backend-better-lyricscf-api)
 - [Utilities](#utilities)
@@ -45,7 +46,8 @@ Give it raw lyric data — TTML (including the Apple Music dialect), standard LR
 - 🛡 **Tolerant of real-world data** — unbalanced tags, HTML entities, JSON-wrapped payloads, absolute *or* relative TTML span timing: all handled.
 - 🚀 **Complete fetching pipeline** — `LyricsFetcher` resolves the playing track to its official YouTube Topic video, requests your worker, coalesces duplicate in-flight requests, falls back through raw-JSON scanning and embedded-URL following when response shapes drift, and infers missing metadata from the resolved video.
 - 💾 **Self-maintaining persistent cache** — `LyricsDiskCache` persists results across launches with expiry, schema versioning, and a size ceiling; empty payloads are never cached, so a transient failure cannot pin a bad result to a track.
-- 📦 **Zero dependencies, fully `Sendable`, `Codable` models** — everything round-trips through `JSONEncoder` for custom persistence layers.
+- 🔑 **No YouTube API key** — topic-video resolution runs through [YouTubeKit](https://github.com/b5i/YouTubeKit)'s keyless InnerTube access, with a custom YouTube Music *songs* search that surfaces official `Artist - Topic` videos directly. No Google Cloud project, no 10,000-unit daily quota.
+- 📦 **Fully `Sendable`, `Codable` models** — everything round-trips through `JSONEncoder` for custom persistence layers. One dependency ([YouTubeKit](https://github.com/b5i/YouTubeKit)), used only by the fetcher; the parsers are dependency-free.
 
 ## Requirements
 
@@ -214,7 +216,6 @@ let fetcher = LyricsFetcher(
         // ⚠️ Placeholder — replace with your own deployed worker (see the
         // backend tutorial below for creating one).
         workerBaseURL: LyricsFetcherConfiguration.placeholderWorkerBaseURL,
-        googleAPIKey: "AIza…",          // YouTube Data API v3 key
         authorizationToken: jwt          // nil while BYPASS_AUTH=true locally
     ),
     cache: LyricsDiskCache()             // optional, strongly recommended
@@ -235,9 +236,7 @@ let lyrics = try await fetcher.fetchLyrics(
 
 2. **Request coalescing.** Concurrent fetches for the same track (duplicate UI requests, track-change races) join the existing in-flight request instead of duplicating it.
 
-3. **YouTube Topic resolution.** The fetcher queries the [YouTube Data API v3](https://developers.google.com/youtube/v3) for the track as an official *"Topic"* video — auto-generated `Artist - Topic` channels carry the cleanest metadata for lyrics matching. It builds a prioritized query ladder (`"Artist Song topic"` first, then album variants, symbol-sanitized titles like *Pink + White* → *Pink White*, and bare-metadata fallbacks), scores every candidate (Topic channel +100, artist/title matches, "official"/"audio" markers), and sanity-checks the winner against your metadata. If the top result doesn't plausibly match, it retries with stricter queries (*official audio*, *official video*, *lyrics*, *live*) before settling — and a weak match is deliberately never cached, so a better one can win next time.
-
-   **This step requires a Google API key** with YouTube Data API v3 enabled — see [Step 3 of the backend tutorial](#step-3--api-keys). Each search costs 100 units of the 10,000/day free quota; resolved video IDs are cached in memory per track so repeat plays don't re-spend it.
+3. **YouTube Topic resolution.** The fetcher searches YouTube through [YouTubeKit](https://github.com/b5i/YouTubeKit) — YouTube's internal (InnerTube) API, **no Google API key and no quota** — for the track as an official *"Topic"* video. Searches run in two tiers: first a custom YouTube Music *songs* search (built on YouTubeKit's [custom requests](https://github.com/b5i/YouTubeKit#custom-requests-and-responses)), whose results are precisely the auto-generated `Artist - Topic` videos carrying the cleanest metadata for lyrics matching; then a plain web search as fallback. It builds a prioritized query ladder (`"Artist Song topic"` first, then album variants, symbol-sanitized titles like *Pink + White* → *Pink White*, and bare-metadata fallbacks), scores every candidate (Topic channel +100, artist/title matches, "official"/"audio" markers), and sanity-checks the winner against your metadata. If the top result doesn't plausibly match, it retries with stricter queries (*official audio*, *official video*, *lyrics*, *live*) before settling — and a weak match is deliberately never cached, so a better one can win next time. Resolved video IDs are cached in memory per track.
 
 4. **Metadata inference.** Players sometimes report incomplete metadata (a title with no artist, or vice versa). The resolved video fills the gaps — an `"Artist - Song"` video title splits into both halves — and the inferred values are forwarded to the worker to improve its matching. Caller-supplied metadata is never overwritten, only completed.
 
@@ -247,14 +246,14 @@ let lyrics = try await fetcher.fetchLyrics(
 
 7. **Store.** Non-empty results are written to the disk cache for subsequent launches.
 
-`LyricsFetcher` is an actor, safe to call concurrently from any context. It throws `LyricsFetchError` for configuration and transport problems (`missingGoogleAPIKey`, `requestFailed(statusCode:)`, `noTopicVideoFound`), and returns `nil` when the pipeline succeeded but no source had lyrics for the track. Networking runs on an ephemeral `URLSession` (no cookie or credential persistence, waits for connectivity, timeouts configurable).
+`LyricsFetcher` is an actor, safe to call concurrently from any context. It throws `LyricsFetchError` for configuration and transport problems (`requestFailed(statusCode:)`, `noTopicVideoFound`), and returns `nil` when the pipeline succeeded but no source had lyrics for the track. Networking runs on an ephemeral `URLSession` (no cookie or credential persistence, waits for connectivity, timeouts configurable).
 
 > [!WARNING]
-> `LyricsFetcherConfiguration.placeholderWorkerBaseURL` (`https://better-lyrics-api.your-account.workers.dev`) is a placeholder; nothing is deployed there. Follow [Setting Up a Lyrics Backend](#setting-up-a-lyrics-backend-better-lyricscf-api) to create your own worker, then point `workerBaseURL` at it. Treat the Google API key as a secret: load it from a local plist or environment configuration, restrict it to the YouTube Data API in the Google Cloud console, and never commit it.
+> `LyricsFetcherConfiguration.placeholderWorkerBaseURL` (`https://better-lyrics-api.your-account.workers.dev`) is a placeholder; nothing is deployed there. Follow [Setting Up a Lyrics Backend](#setting-up-a-lyrics-backend-better-lyricscf-api) to create your own worker, then point `workerBaseURL` at it.
 
 ## Caching (LyricsDiskCache)
 
-Lyrics rarely change once fetched, so persistent caching directly reduces bandwidth usage, worker provider quota consumption, and YouTube search quota spend. `LyricsDiskCache` is a self-maintaining actor constructed once and passed to the fetcher:
+Lyrics rarely change once fetched, so persistent caching directly reduces bandwidth usage and worker provider quota consumption. `LyricsDiskCache` is a self-maintaining actor constructed once and passed to the fetcher:
 
 ```swift
 let cache = LyricsDiskCache()                    // sensible defaults, or:
@@ -269,6 +268,27 @@ Maintenance is automatic:
 - **Manual invalidation** — `clearAll()` (or `fetcher.clearCaches()`) removes every entry for a full refresh.
 
 Entries are keyed by title + artist + album + rounded duration (SHA-256 hashed to filenames), and live in `Application Support/SyncedLyricsKit/LyricsCache` by default — pass your own directory if you'd rather keep it elsewhere.
+
+## Basic SwiftUI Renderer
+
+The package includes `SyncedLyricsRenderer`, a deliberately small renderer you can use directly or copy into your app and customize. Supply the current playback time whenever it changes:
+
+```swift
+SyncedLyricsRenderer(
+    lyrics: lyrics,
+    time: player.currentTime,
+    style: LyricsRendererStyle(
+        activeColor: .white,
+        inactiveColor: .white.opacity(0.35),
+        lyricFont: .system(size: 32, weight: .bold)
+    ),
+    onLineTap: { player.seek(to: $0) }
+)
+```
+
+It provides active-line selection, automatic scrolling, tap-to-seek, plain-text fallback, translations, and progressive highlighting. Standard line-timed LRC is highlighted across the line's full `start...end` interval, so it animates just like richer timing rather than switching the entire line on at once.
+
+For a completely custom view, reuse `LyricsRendererTimeline.activeLine(in:at:)` and `progress(for:at:)` while replacing the included SwiftUI layout.
 
 ## Rendering Guidance
 
@@ -333,6 +353,8 @@ namespace_id = "YOUR_RATE_LIMIT_NAMESPACE_ID"
 2. Note the **Site Key** and **Secret Key** for the next step.
 
 ### Step 3 — API keys
+
+These keys are consumed **by the worker, server-side** — the Swift client itself needs no API key (topic-video resolution runs keyless through YouTubeKit).
 
 **Google (YouTube Data API v3):**
 

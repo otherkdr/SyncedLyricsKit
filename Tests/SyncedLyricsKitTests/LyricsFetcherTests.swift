@@ -46,6 +46,13 @@ struct LyricsFetcherTests {
         #expect(best.videoId == "official")
     }
 
+    @Test("Retryable network errors include timeouts and connection drops")
+    func retryableNetworkErrors() {
+        #expect(LyricsFetcher.isRetryableSearchError(URLError(.timedOut)))
+        #expect(LyricsFetcher.isRetryableSearchError(URLError(.networkConnectionLost)))
+        #expect(!LyricsFetcher.isRetryableSearchError(URLError(.badServerResponse)))
+    }
+
     @Test("Candidate matching accepts title, video-title artist, or channel artist")
     func candidateMatching() {
         let title = TrackMetadataNormalizer.normalized("My Song")
@@ -61,6 +68,49 @@ struct LyricsFetcherTests {
         #expect(!LyricsFetcher.candidateMatches(neither, title: title, artist: artist))
     }
 
+    @Test("Connective symbols normalize like the word 'and'")
+    func connectiveSymbolNormalization() {
+        // "Fire & Desire" and "Fire and Desire" are the same track; the "&"
+        // must not collapse to nothing and diverge from the spelled-out form.
+        #expect(TrackMetadataNormalizer.normalized("Fire & Desire") == "fire and desire")
+        #expect(
+            TrackMetadataNormalizer.normalized("Fire & Desire")
+                == TrackMetadataNormalizer.normalized("Fire and Desire")
+        )
+        // "+" reads as "and" too ("Pink + White").
+        #expect(
+            TrackMetadataNormalizer.normalized("Pink + White")
+                == TrackMetadataNormalizer.normalized("Pink and White")
+        )
+        // A shared spelling means a shared cache key.
+        #expect(
+            TrackMetadataNormalizer.cacheKey(title: "Fire & Desire", artist: "Drake")
+                == TrackMetadataNormalizer.cacheKey(title: "Fire and Desire", artist: "Drake")
+        )
+    }
+
+    @Test("Strong match needs the track title, not just the artist's channel")
+    func strongMatchGuardsAgainstFireAndDesireBug() {
+        let title = TrackMetadataNormalizer.normalized("Fire & Desire")
+        let artist = TrackMetadataNormalizer.normalized("Drake")
+
+        // The regression: a *different* track from the right artist's Topic
+        // channel must NOT strongly match, or it short-circuits the stricter
+        // queries and resolves the wrong song.
+        let wrongSong = LyricsFetcher.VideoCandidate(videoId: "w", channelTitle: "Drake - Topic", title: "Desires (feat. Future)")
+        #expect(!LyricsFetcher.candidateStronglyMatches(wrongSong, title: title, artist: artist))
+        #expect(LyricsFetcher.candidateMatches(wrongSong, title: title, artist: artist)) // still a loose fallback
+
+        // The real track — even spelled with "and" — strongly matches thanks
+        // to connective-symbol normalization.
+        let rightSong = LyricsFetcher.VideoCandidate(videoId: "r", channelTitle: "Drake - Topic", title: "Fire and Desire")
+        #expect(LyricsFetcher.candidateStronglyMatches(rightSong, title: title, artist: artist))
+
+        // With no title to check, strong match falls back to the loose signal.
+        let noTitle = LyricsFetcher.VideoCandidate(videoId: "n", channelTitle: "Drake - Topic", title: "Anything")
+        #expect(LyricsFetcher.candidateStronglyMatches(noTitle, title: "", artist: artist))
+    }
+
     @Test("Configuration can be loaded from a secrets plist")
     func secretsPlistConfiguration() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -70,7 +120,6 @@ struct LyricsFetcherTests {
         let plistURL = directory.appendingPathComponent("Secrets.plist")
         let data = try PropertyListSerialization.data(
             fromPropertyList: [
-                "GoogleAPIKey": "abc123",
                 "AuthorizationToken": "token123",
                 "WorkerBaseURL": "https://example.com"
             ],
@@ -80,42 +129,53 @@ struct LyricsFetcherTests {
         try data.write(to: plistURL)
 
         let config = try LyricsFetcherConfiguration(contentsOf: plistURL)
-        #expect(config.googleAPIKey == "abc123")
         #expect(config.authorizationToken == "token123")
-        #expect(config.workerBaseURL.absoluteString == "https://example.com/")
+        #expect(config.workerBaseURL.absoluteString == "https://example.com")
     }
 
     @Test("Default configuration reads environment variables when no plist is present")
     func defaultConfigurationUsesEnvironment() {
         let config = LyricsFetcherConfiguration.makeDefault(environment: [
-            "SYNCED_LYRICS_GOOGLE_API_KEY": "env-key",
             "SYNCED_LYRICS_AUTHORIZATION_TOKEN": "env-token",
             "SYNCED_LYRICS_WORKER_BASE_URL": "https://env.example.com"
         ])
 
-        #expect(config.googleAPIKey == "env-key")
         #expect(config.authorizationToken == "env-token")
-        #expect(config.workerBaseURL.absoluteString == "https://env.example.com/")
+        #expect(config.workerBaseURL.absoluteString == "https://env.example.com")
     }
 
-    @Test("An empty Google API key throws before any network call")
-    func missingKeyThrows() async {
-        let fetcher = LyricsFetcher(configuration: .init(googleAPIKey: "  "))
+    @Test("Fetch pipeline uses the injected search client and returns worker lyrics")
+    func fetchThroughStubSearchClient() async throws {
+        StubWorkerURLProtocol.responseData = Data(#"{"lrclibSyncedLyrics": "[00:05.00]Stubbed line"}"#.utf8)
+
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [StubWorkerURLProtocol.self]
+
+        let searchClient = StubSearchClient(candidates: [
+            YouTubeVideoCandidate(videoId: "abc123xyz", channelTitle: "Artist - Topic", title: "Song")
+        ])
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            session: URLSession(configuration: sessionConfiguration),
+            searchClient: searchClient,
+            useUserSecretsPlist: false
+        )
+
+        let lyrics = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        #expect(lyrics?.lines?.first?.text == "Stubbed line")
+    }
+
+    @Test("Exhausted searches surface as noTopicVideoFound")
+    func searchFailureThrows() async {
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            searchClient: StubSearchClient(candidates: []),
+            useUserSecretsPlist: false
+        )
+
         await #expect(throws: LyricsFetchError.self) {
             _ = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
         }
-    }
-
-    @Test("Fetcher emits logs for configuration failures")
-    func fetcherLogsConfigurationErrors() async {
-        let recorder = MessageRecorder()
-        let fetcher = LyricsFetcher(configuration: .init(googleAPIKey: "  "), logger: { recorder.append($0) })
-
-        await #expect(throws: LyricsFetchError.self) {
-            _ = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
-        }
-
-        #expect(recorder.snapshot().contains { $0.contains("Google API key") })
     }
 
     @Test("Metadata inference splits 'Artist - Song' titles, never overwrites")
@@ -183,6 +243,43 @@ struct LyricsFetcherTests {
         #expect(strings["c"] == "three")
         #expect(strings["empty"] == nil)
     }
+}
+
+/// A ``YouTubeSearchClient`` that serves canned candidates without touching
+/// the network.
+private struct StubSearchClient: YouTubeSearchClient {
+    let candidates: [YouTubeVideoCandidate]
+
+    func searchVideos(matching query: String) async throws -> [YouTubeVideoCandidate] {
+        candidates
+    }
+}
+
+/// Answers every request on its session with `responseData` and HTTP 200,
+/// standing in for the lyrics worker.
+private final class StubWorkerURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var responseData = Data()
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: 200,
+                  httpVersion: nil,
+                  headerFields: ["Content-Type": "application/json"]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.responseData)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 @Suite("Disk cache")
