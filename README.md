@@ -7,7 +7,7 @@ Synchronized lyric data is fragmented across multiple providers and formats, eac
 Give it raw lyric data — TTML (including the Apple Music dialect), standard LRC, or enhanced/rich-sync LRC — and it returns structured, display-ready Swift models timed down to the individual syllable. For the full pipeline, the built-in [`LyricsFetcher`](#fetching-lyricsfetcher) resolves the currently playing track and retrieves lyrics from your own backend. The parsers themselves never touch the network.
 
 > [!IMPORTANT]
-> **This package only provides parsing, structuring, and lyrics fetching. ** A lyrics backend is required to fetch lyrics.** `LyricsFetcher` targets your own deployment of the **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into a single JSON response that this package decodes natively. Deployment fits within Cloudflare's free tier; the complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is below. The parsers also accept data from any other source, including the free [LRCLIB API](https://lrclib.net/). If you are developing for an app with a wide range of customers, be aware that this method of lyrics fetching may cost money in the near future.
+> **`LyricsFetcher` works out of the box with no backend** — it falls back to the free, keyless **[LRCLIB API](https://lrclib.net/)** whenever a worker isn't configured, fails, or returns nothing usable. For the richest results (word-by-word / syllable timing from Musixmatch rich-sync and Apple Music TTML), deploy the optional **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into one JSON response this package decodes natively. When both a worker and LRCLIB return lyrics, the worker's are preferred; LRCLIB runs concurrently so it adds no latency. Deployment fits within Cloudflare's free tier; the complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is below. If you are developing for an app with a wide range of customers, be aware that the worker's upstream providers may cost money in the near future.
 
 > [!INFO]
 Now, you may be asking: "Why can't there just be a unified worker in this package?" My reasoning for that is that creating a unified Cloudflare worker would be heavily costly for me and would make it impossible to be open source.
@@ -407,6 +407,9 @@ npm run deploy
 Your worker lands at `https://your-worker.your-account.workers.dev`. In `wrangler.toml`, set `BYPASS_AUTH = "false"` and lock `ALLOWED_ORIGINS` down to your domains.
 
 ### Step 7 — Authentication flow (production)
+
+> [!TIP]
+> Auth is optional. If you set `BYPASS_AUTH = "true"` in `wrangler.toml`, the worker skips Turnstile and JWTs entirely, and you can drop the whole challenge/verify flow below — `LyricsFetcher` just calls `/lyrics` directly with no token. This is the simplest setup for a private or personal backend; only enable auth when your worker is publicly reachable and you need to protect its quotas.
 
 With auth enabled, clients authenticate once and reuse a JWT:
 

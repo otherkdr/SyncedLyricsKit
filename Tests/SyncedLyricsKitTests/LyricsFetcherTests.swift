@@ -2,7 +2,9 @@ import Foundation
 import Testing
 @testable import SyncedLyricsKit
 
-@Suite("Lyrics fetcher query building and candidate scoring")
+// Serialized: several tests share the StubWorkerURLProtocol.responseData
+// static, which would race under Swift Testing's default parallelism.
+@Suite("Lyrics fetcher query building and candidate scoring", .serialized)
 struct LyricsFetcherTests {
     @Test("Topic queries lead and duplicates collapse")
     func queryOrdering() {
@@ -158,6 +160,7 @@ struct LyricsFetcherTests {
             configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
             session: URLSession(configuration: sessionConfiguration),
             searchClient: searchClient,
+            fallbackClient: StubFallbackClient(lyrics: nil),
             useUserSecretsPlist: false
         )
 
@@ -165,17 +168,117 @@ struct LyricsFetcherTests {
         #expect(lyrics?.lines?.first?.text == "Stubbed line")
     }
 
-    @Test("Exhausted searches surface as noTopicVideoFound")
+    @Test("Worker failure with no fallback lyrics surfaces the worker error")
     func searchFailureThrows() async {
         let fetcher = LyricsFetcher(
             configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
             searchClient: StubSearchClient(candidates: []),
+            fallbackClient: StubFallbackClient(lyrics: nil),
             useUserSecretsPlist: false
         )
 
         await #expect(throws: LyricsFetchError.self) {
             _ = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
         }
+    }
+
+    @Test("LRCLIB fallback is used when the worker returns nothing usable")
+    func fallbackWhenWorkerEmpty() async throws {
+        StubWorkerURLProtocol.responseData = Data(#"{"song":"Song","artist":"Artist"}"#.utf8)
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [StubWorkerURLProtocol.self]
+
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            session: URLSession(configuration: sessionConfiguration),
+            searchClient: StubSearchClient(candidates: [
+                YouTubeVideoCandidate(videoId: "abc123xyz", channelTitle: "Artist - Topic", title: "Song")
+            ]),
+            fallbackClient: StubFallbackClient(lyrics: SyncedLyrics.parse(lrc: "[00:01.00]Fallback line")),
+            useUserSecretsPlist: false
+        )
+
+        let lyrics = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        #expect(lyrics?.lines?.first?.text == "Fallback line")
+    }
+
+    @Test("LRCLIB fallback rescues a worker transport failure")
+    func fallbackWhenWorkerThrows() async throws {
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            searchClient: StubSearchClient(candidates: []), // no topic video -> worker throws
+            fallbackClient: StubFallbackClient(lyrics: SyncedLyrics.parse(lrc: "[00:02.00]Rescued line")),
+            useUserSecretsPlist: false
+        )
+
+        let lyrics = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        #expect(lyrics?.lines?.first?.text == "Rescued line")
+    }
+
+    @Test("Worker lyrics win over the fallback when both succeed")
+    func workerWinsOverFallback() async throws {
+        StubWorkerURLProtocol.responseData = Data(#"{"song":"Song","artist":"Artist","lrclibSyncedLyrics":"[00:05.00]Worker line"}"#.utf8)
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [StubWorkerURLProtocol.self]
+
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            session: URLSession(configuration: sessionConfiguration),
+            searchClient: StubSearchClient(candidates: [
+                YouTubeVideoCandidate(videoId: "abc123xyz", channelTitle: "Artist - Topic", title: "Song")
+            ]),
+            fallbackClient: StubFallbackClient(lyrics: SyncedLyrics.parse(lrc: "[00:01.00]Fallback line")),
+            useUserSecretsPlist: false
+        )
+
+        let lyrics = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        #expect(lyrics?.lines?.first?.text == "Worker line")
+    }
+
+    @Test("Worker answering for a different track defers to the fallback")
+    func mismatchDefersToFallback() async throws {
+        StubWorkerURLProtocol.responseData = Data(#"{"song":"Completely Other Track","artist":"Artist","lrclibSyncedLyrics":"[00:05.00]Wrong song line"}"#.utf8)
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [StubWorkerURLProtocol.self]
+
+        let fetcher = LyricsFetcher(
+            configuration: .init(workerBaseURL: URL(string: "https://worker.test")!),
+            session: URLSession(configuration: sessionConfiguration),
+            searchClient: StubSearchClient(candidates: [
+                YouTubeVideoCandidate(videoId: "abc123xyz", channelTitle: "Artist - Topic", title: "Song")
+            ]),
+            fallbackClient: StubFallbackClient(lyrics: SyncedLyrics.parse(lrc: "[00:01.00]Fallback line")),
+            useUserSecretsPlist: false
+        )
+
+        let lyrics = try await fetcher.fetchLyrics(title: "Song", artist: "Artist")
+        #expect(lyrics?.lines?.first?.text == "Fallback line")
+    }
+
+    @Test("Worker metadata mismatch detection")
+    func workerMetadataMismatch() {
+        // Total divergence -> mismatch.
+        let wrong = WorkerLyricsResponse(song: "Completely Other Track", artist: "Artist")
+        #expect(LyricsFetcher.workerMetadataMismatches(wrong, title: "Fire & Desire", artist: "Drake"))
+
+        // Same track, different connective spelling -> not a mismatch.
+        let ok = WorkerLyricsResponse(song: "Fire and Desire", artist: "Drake")
+        #expect(!LyricsFetcher.workerMetadataMismatches(ok, title: "Fire & Desire", artist: "Drake"))
+
+        // Echoed/absent metadata -> never a mismatch (the common case).
+        let echoed = WorkerLyricsResponse(song: nil, artist: nil)
+        #expect(!LyricsFetcher.workerMetadataMismatches(echoed, title: "Fire & Desire", artist: "Drake"))
+    }
+
+    @Test("LRCLIB bestMatch picks the closest duration among title/artist hits")
+    func lrclibBestMatch() throws {
+        let tracks = [
+            LRCLIBClient.Track(trackName: "Song", artistName: "Artist", duration: 200, syncedLyrics: "[00:01.00]A", plainLyrics: nil, instrumental: false),
+            LRCLIBClient.Track(trackName: "Song", artistName: "Artist", duration: 242, syncedLyrics: "[00:01.00]B", plainLyrics: nil, instrumental: false),
+            LRCLIBClient.Track(trackName: "Unrelated", artistName: "Someone", duration: 240, syncedLyrics: "[00:01.00]C", plainLyrics: nil, instrumental: false)
+        ]
+        let best = try #require(LRCLIBClient.bestMatch(tracks, title: "Song", artist: "Artist", duration: 240))
+        #expect(best.duration == 242) // closest duration among the matching-title hits
     }
 
     @Test("Metadata inference splits 'Artist - Song' titles, never overwrites")
@@ -252,6 +355,18 @@ private struct StubSearchClient: YouTubeSearchClient {
 
     func searchVideos(matching query: String) async throws -> [YouTubeVideoCandidate] {
         candidates
+    }
+}
+
+/// A ``LyricsFallbackClient`` that returns canned lyrics (or throws) without
+/// touching the network.
+private struct StubFallbackClient: LyricsFallbackClient {
+    let lyrics: ParsedLyrics?
+    var error: Error?
+
+    func fetchLyrics(title: String, artist: String, album: String, duration: TimeInterval) async throws -> ParsedLyrics? {
+        if let error { throw error }
+        return lyrics
     }
 }
 

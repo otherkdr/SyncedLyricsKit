@@ -186,6 +186,7 @@ public actor LyricsFetcher {
     private var configuration: LyricsFetcherConfiguration
     private let session: URLSession
     private let searchClient: any YouTubeSearchClient
+    private let fallbackClient: any LyricsFallbackClient
     private let cache: LyricsDiskCache?
     private let logger: LyricsLogger?
 
@@ -203,11 +204,15 @@ public actor LyricsFetcher {
     ///   - searchClient: Override for testing. When `nil`, searches run
     ///     through ``YouTubeKitSearchClient`` — YouTube's internal API, no
     ///     Google API key required.
+    ///   - fallbackClient: Source consulted when the worker path fails or
+    ///     returns nothing usable. When `nil`, the keyless ``LRCLIBClient``
+    ///     is used, so lyrics still resolve even without a worker deployed.
     public init(
         configuration: LyricsFetcherConfiguration? = nil,
         cache: LyricsDiskCache? = nil,
         session: URLSession? = nil,
         searchClient: (any YouTubeSearchClient)? = nil,
+        fallbackClient: (any LyricsFallbackClient)? = nil,
         logger: LyricsLogger? = nil,
         useUserSecretsPlist: Bool = true
     ) {
@@ -223,6 +228,7 @@ public actor LyricsFetcher {
 
         self.configuration = resolvedConfiguration
         self.searchClient = searchClient ?? YouTubeKitSearchClient()
+        self.fallbackClient = fallbackClient ?? LRCLIBClient()
         self.cache = cache
         self.logger = logger
 
@@ -321,6 +327,46 @@ public actor LyricsFetcher {
         album: String,
         duration: TimeInterval
     ) async throws -> ParsedLyrics? {
+        // Start the keyless LRCLIB fallback concurrently. It needs only the
+        // track metadata (not the resolved video), so racing it alongside the
+        // worker adds no latency: if the worker wins, this task is cancelled;
+        // if the worker fails or comes back empty, its result is already warm.
+        async let fallback: ParsedLyrics? = fallbackLyrics(
+            title: title, artist: artist, album: album, duration: duration
+        )
+
+        do {
+            if let workerLyrics = try await workerLyrics(title: title, artist: artist, album: album, duration: duration) {
+                logger?("LyricsFetcher: using worker lyrics; the LRCLIB fallback was not needed")
+                return workerLyrics
+            }
+            // Worker succeeded at the transport level but yielded nothing
+            // usable (or the returned lyrics didn't match the track).
+            logger?("LyricsFetcher: worker returned no usable lyrics — using the LRCLIB fallback")
+            return await fallback
+        } catch {
+            // Worker outright failed (no topic video, HTTP error, transport).
+            logger?("LyricsFetcher: worker path failed (\(error)) — using the LRCLIB fallback")
+            if let fallbackLyrics = await fallback {
+                return fallbackLyrics
+            }
+            // Both sources came up empty — surface the worker's error so the
+            // caller can distinguish a real failure from "no lyrics found".
+            logger?("LyricsFetcher: the LRCLIB fallback also found nothing; surfacing the worker error")
+            throw error
+        }
+    }
+
+    /// The worker-backed lyrics path: resolve the topic video, request the
+    /// worker, and parse the best available source. Returns `nil` when the
+    /// worker responds but carries nothing usable (or lyrics that don't match
+    /// the requested track); throws for resolution and transport failures.
+    private func workerLyrics(
+        title: String,
+        artist: String,
+        album: String,
+        duration: TimeInterval
+    ) async throws -> ParsedLyrics? {
         logger?("LyricsFetcher: resolving the official YouTube topic video for the requested track")
         let resolution = try await resolveTopicVideo(title: title, artist: artist, album: album)
         logger?("LyricsFetcher: requesting lyrics from the worker using topic video \(resolution.videoId)")
@@ -337,6 +383,14 @@ public actor LyricsFetcher {
         }
         guard !data.isEmpty else { return nil }
 
+        // If the worker independently reports a track that clearly isn't the
+        // one asked for, treat the payload as unusable so the fallback runs.
+        if let decoded = try? JSONDecoder().decode(WorkerLyricsResponse.self, from: data),
+           Self.workerMetadataMismatches(decoded, title: title, artist: artist) {
+            logger?("LyricsFetcher: worker responded for a different track ('\(decoded.song ?? "")' / '\(decoded.artist ?? "")') than requested — treating as no match")
+            return nil
+        }
+
         // Preferred path: the typed worker response with source-priority
         // selection.
         if let decoded = try? JSONDecoder().decode(WorkerLyricsResponse.self, from: data),
@@ -352,14 +406,50 @@ public actor LyricsFetcher {
             return lyrics
         }
 
-        // Last resort: the response may point at the lyrics rather than
-        // embed them. Follow any URLs it contains and parse what they serve.
+        // The response may point at the lyrics rather than embed them. Follow
+        // any URLs it contains and parse what they serve.
         if let lyrics = await lyricsFromEmbeddedURLs(in: data), !lyrics.isEmpty {
             logger?("LyricsFetcher: parsed lyrics from an embedded URL fallback because the worker did not return lyrics inline")
             return lyrics
         }
 
         return nil
+    }
+
+    /// Runs the injected fallback client, swallowing its errors: a fallback
+    /// failure must never break the primary path, only log.
+    private func fallbackLyrics(
+        title: String,
+        artist: String,
+        album: String,
+        duration: TimeInterval
+    ) async -> ParsedLyrics? {
+        do {
+            if let lyrics = try await fallbackClient.fetchLyrics(
+                title: title, artist: artist, album: album, duration: duration
+            ), !lyrics.isEmpty {
+                logger?("LyricsFetcher: the LRCLIB fallback found lyrics for this track")
+                return lyrics
+            }
+            logger?("LyricsFetcher: the LRCLIB fallback found no lyrics for this track")
+            return nil
+        } catch {
+            logger?("LyricsFetcher: the LRCLIB fallback failed (\(error))")
+            return nil
+        }
+    }
+
+    /// Best-effort check that the worker answered for the requested track.
+    /// Only fires when the worker reports metadata that clearly diverges from
+    /// what was asked; a worker that merely echoes the request (the common
+    /// case) never trips this, so it is a guard, not a guarantee.
+    static func workerMetadataMismatches(_ response: WorkerLyricsResponse, title: String, artist: String) -> Bool {
+        let requestedTitle = TrackMetadataNormalizer.normalized(title)
+        let reportedTitle = TrackMetadataNormalizer.normalized(response.song)
+        guard !requestedTitle.isEmpty, !reportedTitle.isEmpty else { return false }
+        // Overlap either way counts as a match ("Fire and Desire" vs a longer
+        // "Fire and Desire (Bonus)"). Only a total divergence is a mismatch.
+        return !reportedTitle.contains(requestedTitle) && !requestedTitle.contains(reportedTitle)
     }
 
     // MARK: - Step 1: YouTube topic-video resolution
