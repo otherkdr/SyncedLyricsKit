@@ -1,13 +1,16 @@
 # SyncedLyricsKit
 
-**Word-by-word and syllable-timed lyrics for Swift — fetched, parsed, and structured.**
+**Word-by-word and syllable-timed lyrics for Swift — fetched, parsed, and structured. First of its kind.**
 
 Synchronized lyric data is fragmented across multiple providers and formats, each with its own quirks: nested background-vocal markup, duet voice metadata, translations embedded in document heads, and span timestamps that may be absolute or relative depending on the producer. SyncedLyricsKit normalizes all of it behind one API.
 
 Give it raw lyric data — TTML (including the Apple Music dialect), standard LRC, or enhanced/rich-sync LRC — and it returns structured, display-ready Swift models timed down to the individual syllable. For the full pipeline, the built-in [`LyricsFetcher`](#fetching-lyricsfetcher) resolves the currently playing track and retrieves lyrics from your own backend. The parsers themselves never touch the network.
 
 > [!IMPORTANT]
-> **A lyrics backend is required for fetching.** `LyricsFetcher` targets your own deployment of the **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into a single JSON response that this package decodes natively. Deployment fits within Cloudflare's free tier; the complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is below. The parsers also accept data from any other source, including the free [LRCLIB API](https://lrclib.net/).
+> **This package only provides parsing, structuring, and lyrics fetching. ** A lyrics backend is required to fetch lyrics.** `LyricsFetcher` targets your own deployment of the **[better-lyrics/cf-api](https://github.com/better-lyrics/cf-api)** Cloudflare Worker, which aggregates Musixmatch, LRCLIB, Binimum (Apple Music TTML), GoLyrics, QQ Music, and Kugou into a single JSON response that this package decodes natively. Deployment fits within Cloudflare's free tier; the complete [setup tutorial](#setting-up-a-lyrics-backend-better-lyricscf-api) is below. The parsers also accept data from any other source, including the free [LRCLIB API](https://lrclib.net/). If you are developing for an app with a wide range of customers, be aware that this method of lyrics fetching may cost money in the near future.
+
+> [!INFO]
+Now, you may be asking: "Why can't there just be a unified worker in this package?" My reasoning for that is that creating a unified Cloudflare worker would be heavily costly for me and would make it impossible to be open source.
 
 ---
 
@@ -68,7 +71,7 @@ SyncedLyricsKit is macOS-focused because syllable-timed lyric rendering is prima
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/otherkdr/SyncedLyricsKit.git", from: "1.0.0")
+    .package(url: "https://github.com/otherkdr/SyncedLyricsKit.git", from: "1.1.1")
 ],
 targets: [
     .target(
