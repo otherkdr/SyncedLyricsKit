@@ -33,6 +33,7 @@ Now, you may be asking: "Why can't there just be a unified worker in this packag
 - [Design Notes](#design-notes)
 - [Credits](#credits)
 - [Contributing](#contributing)
+- [Disclaimer](#disclaimer)
 - [License](#license)
 
 ---
@@ -480,6 +481,16 @@ swift test --build-system native
 ```
 
 The default SwiftPM build system leaves an unremovable `com.apple.provenance` xattr on the signed test bundle, which fails codesigning on macOS; `--build-system native` avoids it. CI runs exactly this command.
+
+## Disclaimer
+
+SyncedLyricsKit is a **client library**: it parses, structures, and retrieves lyrics from sources you point it at. It does not host, own, or license any lyrics itself.
+
+Song lyrics are copyrighted works owned by their respective rightsholders. The [MIT license](#license) below covers **this package's source code only** — it grants you no rights to the lyric content the package fetches or parses. The upstream sources (LRCLIB, and, if you deploy the worker, Musixmatch, Apple Music/Binimum, GoLyrics, QQ Music, and Kugou) each have their own terms of use.
+
+**You are responsible for how you use the lyric data you retrieve.** Before shipping, make sure your usage complies with the terms of every source you enable and with copyright law in your jurisdiction — obtaining a commercial lyrics license where one is required. This package is intended for personal, educational, and research use; using it in a distributed or commercial product may require licensing that this project does not and cannot provide.
+
+Nothing here is legal advice. If you are unsure whether your use is permitted, consult the relevant providers' terms and, where appropriate, a qualified professional.
 
 ## License
 
