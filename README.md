@@ -290,9 +290,19 @@ SyncedLyricsRenderer(
 )
 ```
 
-It provides active-line selection, automatic scrolling, tap-to-seek, plain-text fallback, translations, and progressive highlighting. Standard line-timed LRC is highlighted across the line's full `start...end` interval, so it animates just like richer timing rather than switching the entire line on at once.
+It provides active-line selection, automatic scrolling, tap-to-seek, plain-text fallback, translations, and progressive highlighting. Standard line-timed LRC is highlighted across the line's full `start...end` interval, so it animates just like richer timing rather than switching the entire line on at once. When the active line has background/harmony vocals, they appear as a dimmed sub-line beneath it (toggle via `LyricsRendererStyle.showBackgroundVocals`).
 
-For a completely custom view, reuse `LyricsRendererTimeline.activeLine(in:at:)` and `progress(for:at:)` while replacing the included SwiftUI layout.
+To keep the scroll-to-active engine but supply your own per-line visuals, pass a `lineContent` builder. You receive each line and whether it's active, and return any view; the renderer still handles scrolling, tap-to-seek, and layout. Reuse the timing helpers on `LyricsRendererTimeline` for the same fill behavior:
+
+```swift
+SyncedLyricsRenderer(lyrics: lyrics, time: player.currentTime, onLineTap: { player.seek(to: $0) }) { line, isActive in
+    Text(line.text)
+        .font(.title2.bold())
+        .foregroundStyle(isActive ? .white : .white.opacity(0.35))
+}
+```
+
+You can also embed the built-in `DefaultLyricLineView` inside your own line, or drop to `LyricsRendererTimeline.activeLine(in:at:)` and `progress(for:at:)` and replace the SwiftUI layout entirely.
 
 ## Rendering Guidance
 

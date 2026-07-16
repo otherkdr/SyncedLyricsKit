@@ -68,23 +68,42 @@ public struct LyricsRendererStyle {
 ///     player.seek(to: start)
 /// }
 /// ```
+///
+/// To keep the scroll-to-active engine but supply your own per-line visuals,
+/// pass a `lineContent` builder — you receive each line and whether it is the
+/// active one, and return any view. The active-line timing helpers on
+/// ``LyricsRendererTimeline`` (e.g. `progress(for:at:)`) let your custom line
+/// reuse the same fill behavior:
+///
+/// ```swift
+/// SyncedLyricsRenderer(lyrics: lyrics, time: t, onLineTap: { player.seek(to: $0) }) { line, isActive in
+///     Text(line.text)
+///         .opacity(isActive ? 1 : 0.4)
+/// }
+/// ```
 @available(macOS 13.0, *)
-public struct SyncedLyricsRenderer: View {
+public struct SyncedLyricsRenderer<LineContent: View>: View {
     public let lyrics: ParsedLyrics
     public let time: TimeInterval
     public var style: LyricsRendererStyle
     public var onLineTap: ((TimeInterval) -> Void)?
+    private let lineContent: (LyricLine, Bool) -> LineContent
 
+    /// Creates a renderer with a custom per-line view. The renderer still
+    /// owns scrolling, active-line detection, tap-to-seek, and layout; your
+    /// builder controls only how each line looks.
     public init(
         lyrics: ParsedLyrics,
         time: TimeInterval,
         style: LyricsRendererStyle = LyricsRendererStyle(),
-        onLineTap: ((TimeInterval) -> Void)? = nil
+        onLineTap: ((TimeInterval) -> Void)? = nil,
+        @ViewBuilder lineContent: @escaping (_ line: LyricLine, _ isActive: Bool) -> LineContent
     ) {
         self.lyrics = lyrics
         self.time = time
         self.style = style
         self.onLineTap = onLineTap
+        self.lineContent = lineContent
     }
 
     public var body: some View {
@@ -113,7 +132,8 @@ public struct SyncedLyricsRenderer: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: style.lineSpacing) {
                     ForEach(lines) { line in
-                        lineView(line, isActive: line.id == activeID)
+                        lineContent(line, line.id == activeID)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .id(line.id)
                             .contentShape(Rectangle())
                             .onTapGesture { onLineTap?(line.start) }
@@ -132,8 +152,42 @@ public struct SyncedLyricsRenderer: View {
             }
         }
     }
+}
 
-    private func lineView(_ line: LyricLine, isActive: Bool) -> some View {
+@available(macOS 13.0, *)
+extension SyncedLyricsRenderer where LineContent == DefaultLyricLineView {
+    /// Creates a renderer using the built-in line view (progressive fill,
+    /// translation, and a background-vocal sub-line).
+    public init(
+        lyrics: ParsedLyrics,
+        time: TimeInterval,
+        style: LyricsRendererStyle = LyricsRendererStyle(),
+        onLineTap: ((TimeInterval) -> Void)? = nil
+    ) {
+        self.init(lyrics: lyrics, time: time, style: style, onLineTap: onLineTap) { line, isActive in
+            DefaultLyricLineView(line: line, isActive: isActive, time: time, style: style)
+        }
+    }
+}
+
+/// The package's default per-line view: a progressively filled lead line, an
+/// optional translation, and an optional background-vocal sub-line. Exposed
+/// so custom renderers can embed or wrap it instead of reimplementing it.
+@available(macOS 13.0, *)
+public struct DefaultLyricLineView: View {
+    public let line: LyricLine
+    public let isActive: Bool
+    public let time: TimeInterval
+    public let style: LyricsRendererStyle
+
+    public init(line: LyricLine, isActive: Bool, time: TimeInterval, style: LyricsRendererStyle) {
+        self.line = line
+        self.isActive = isActive
+        self.time = time
+        self.style = style
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             ProgressiveLyricText(
                 text: line.text,
