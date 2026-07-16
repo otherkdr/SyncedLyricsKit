@@ -36,6 +36,23 @@ struct LyricsRendererTests {
         #expect(LyricsRendererTimeline.activeLine(in: lines, at: 8)?.text == "Duet")
     }
 
+    @Test("Background vocals join into one sub-line, or nil when absent")
+    func backgroundVocalText() {
+        let withBacking = LyricLine(
+            start: 0, end: 4, text: "Lead line",
+            words: [LyricWord(text: "Lead line", start: 0, duration: 4)],
+            backgroundWords: [
+                LyricWord(text: " ooh ", start: 0, duration: 1),
+                LyricWord(text: "", start: 1, duration: 0),
+                LyricWord(text: "yeah", start: 1, duration: 1)
+            ]
+        )
+        #expect(LyricsRendererTimeline.backgroundVocalText(for: withBacking) == "ooh yeah")
+
+        let noBacking = line(start: 0, end: 4)
+        #expect(LyricsRendererTimeline.backgroundVocalText(for: noBacking) == nil)
+    }
+
     @Test("Zero-duration lines avoid division by zero")
     func zeroDuration() {
         let lyric = line(start: 10, end: 10)

@@ -13,6 +13,12 @@ public struct LyricsRendererStyle {
     public var backgroundColor: Color
     public var lyricFont: Font
     public var translationFont: Font
+    /// Font for the background/harmony-vocal sub-line. Usually smaller than
+    /// ``lyricFont``.
+    public var backgroundVocalFont: Font
+    /// Whether to show the background/harmony-vocal sub-line on the active
+    /// line. Off hides it entirely.
+    public var showBackgroundVocals: Bool
     public var lineSpacing: CGFloat
     public var horizontalPadding: CGFloat
     public var verticalPadding: CGFloat
@@ -25,6 +31,8 @@ public struct LyricsRendererStyle {
         backgroundColor: Color = .clear,
         lyricFont: Font = .system(size: 28, weight: .bold, design: .rounded),
         translationFont: Font = .system(size: 15, weight: .regular),
+        backgroundVocalFont: Font = .system(size: 17, weight: .regular),
+        showBackgroundVocals: Bool = true,
         lineSpacing: CGFloat = 22,
         horizontalPadding: CGFloat = 24,
         verticalPadding: CGFloat = 80,
@@ -36,6 +44,8 @@ public struct LyricsRendererStyle {
         self.backgroundColor = backgroundColor
         self.lyricFont = lyricFont
         self.translationFont = translationFont
+        self.backgroundVocalFont = backgroundVocalFont
+        self.showBackgroundVocals = showBackgroundVocals
         self.lineSpacing = lineSpacing
         self.horizontalPadding = horizontalPadding
         self.verticalPadding = verticalPadding
@@ -49,7 +59,9 @@ public struct LyricsRendererStyle {
 /// Pass the player's current time on every playback update. The renderer
 /// selects and scrolls to the active line, then fills that line according to
 /// its timing. Line-timed lyrics use the complete line interval, so they get
-/// the same progressive highlighting behavior as richer sources.
+/// the same progressive highlighting behavior as richer sources. When the
+/// active line carries background/harmony vocals, they appear as a single
+/// dimmed sub-line beneath it (toggle with ``LyricsRendererStyle/showBackgroundVocals``).
 ///
 /// ```swift
 /// SyncedLyricsRenderer(lyrics: lyrics, time: player.currentTime) { start in
@@ -136,6 +148,17 @@ public struct SyncedLyricsRenderer: View {
                     .font(style.translationFont)
                     .foregroundStyle(isActive ? style.activeColor.opacity(0.72) : style.inactiveColor)
             }
+
+            // Background / harmony vocals: a single dimmed, italic sub-line,
+            // shown only on the active line so idle rows stay as cheap as
+            // possible (no per-word timing, no view built when inactive).
+            if isActive, style.showBackgroundVocals,
+               let background = LyricsRendererTimeline.backgroundVocalText(for: line) {
+                Text(background)
+                    .font(style.backgroundVocalFont)
+                    .italic()
+                    .foregroundStyle(style.inactiveColor)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .scaleEffect(isActive ? 1 : style.inactiveScale, anchor: .leading)
@@ -194,5 +217,18 @@ public enum LyricsRendererTimeline {
     public static func progress(for line: LyricLine, at time: TimeInterval) -> Double {
         guard line.end > line.start else { return time >= line.start ? 1 : 0 }
         return min(max((time - line.start) / (line.end - line.start), 0), 1)
+    }
+
+    /// The line's background/harmony vocals as a single display string, or
+    /// `nil` when there are none. Deliberately simple: it joins the backing
+    /// words rather than timing them, so a renderer can show them as one
+    /// dimmed sub-line with no per-word work.
+    public static func backgroundVocalText(for line: LyricLine) -> String? {
+        guard let words = line.backgroundWords, !words.isEmpty else { return nil }
+        let joined = words
+            .map { $0.text.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return joined.isEmpty ? nil : joined
     }
 }
